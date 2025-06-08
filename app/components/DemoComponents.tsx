@@ -159,10 +159,16 @@ type HomeProps = {
 
 type Product = {
   title: string;
-  price: string;
+  price: {
+    value?: number;
+    raw?: string;
+  };
   thumbnail: string;
-  link: string;
+  main_image?: string;
   asin: string;
+  rating?: number;
+  reviews?: number;
+  position?: number;
 }
 
 export function Home({ setActiveTab }: HomeProps) {
@@ -170,12 +176,34 @@ export function Home({ setActiveTab }: HomeProps) {
   const [searchResults, setSearchResults] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hasSearched, setHasSearched] = useState(false);
+
+  const extractPrice = (product: any): number | null => {
+    const priceLocations = [
+      product.buybox?.price?.value,
+      product.price?.value,
+      product.extracted_price,
+      product.buybox?.price?.raw?.replace(/[^0-9.]/g, ''),
+      product.price?.raw?.replace(/[^0-9.]/g, ''),
+      product.original_price?.value,
+      product.original_price?.raw?.replace(/[^0-9.]/g, ''),
+    ];
+
+    for (const price of priceLocations) {
+      if (price && !isNaN(Number(price)) && Number(price) > 0) {
+        return Number(price);
+      }
+    }
+
+    return null;
+  };
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
 
     setIsLoading(true);
     setError(null);
+    setHasSearched(true);
 
     try {
       const response = await fetch('/api/search', {
@@ -201,16 +229,29 @@ export function Home({ setActiveTab }: HomeProps) {
         return;
       }
 
-      // Transform the results to match our Product type
-      const products = data.organic_results.map((result: any) => ({
-        title: result.title,
-        price: result.price?.raw || 'Price not available',
-        thumbnail: result.thumbnail,
-        link: result.link,
-        asin: result.asin,
-      }));
+      // Filter out invalid products
+      const validProducts = data.organic_results.filter((product: any) => {
+        if (product.buybox?.is_amazon_fresh === true || product.is_amazon_fresh === true) {
+          return false;
+        }
 
-      setSearchResults(products);
+        if (product.buybox?.is_whole_foods_market === true || product.is_whole_foods_market === true) {
+          return false;
+        }
+
+        const pricePerUnit = (product.price_per?.unit || '').toLowerCase();
+        if (pricePerUnit.includes('ounce') || pricePerUnit.includes('lb') || pricePerUnit.includes('gram')) {
+          return false;
+        }
+
+        if (product.price_per) {
+          return false;
+        }
+
+        return extractPrice(product) !== null;
+      });
+
+      setSearchResults(validProducts);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
       setSearchResults([]);
@@ -229,7 +270,7 @@ export function Home({ setActiveTab }: HomeProps) {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-              placeholder="Enter your search query..."
+              placeholder="Search for products..."
               className="flex-1 px-4 py-2 rounded-lg border border-[var(--app-card-border)] bg-[var(--app-background)] text-[var(--app-foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--app-accent)]"
             />
             <Button
@@ -245,40 +286,71 @@ export function Home({ setActiveTab }: HomeProps) {
             <div className="text-red-500 text-sm">{error}</div>
           )}
 
-          {searchResults.length > 0 && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-              {searchResults.map((product) => (
-                <div
-                  key={product.asin}
-                  className="bg-[var(--app-card-bg)] rounded-lg p-4 border border-[var(--app-card-border)] hover:shadow-lg transition-shadow"
-                >
-                  <div className="flex space-x-4">
-                    <img
-                      src={product.thumbnail}
-                      alt={product.title}
-                      className="w-24 h-24 object-contain"
-                    />
-                    <div className="flex-1">
-                      <h3 className="font-medium text-[var(--app-foreground)] line-clamp-2">
-                        {product.title}
+          {isLoading ? (
+            <div className="text-center py-8">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[var(--app-accent)] mx-auto"></div>
+              <p className="mt-4 text-[var(--app-foreground-muted)]">Searching products...</p>
+            </div>
+          ) : searchResults.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {searchResults.map((product, index) => {
+                const productTitle = product.title || 'No title available';
+                const productImageUrl = product.thumbnail || product.main_image || '/placeholder.png';
+                const productPrice = extractPrice(product);
+                const position = product.position || index;
+
+                return (
+                  <div
+                    key={`${product.asin}-${position}`}
+                    className="bg-[var(--app-card-bg)] rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-300 h-full flex flex-col"
+                  >
+                    <div className="relative h-48 sm:h-56 bg-white">
+                      <img
+                        src={productImageUrl}
+                        alt={productTitle}
+                        className="w-full h-full object-contain p-4"
+                      />
+                    </div>
+                    <div className="p-4 flex-grow flex flex-col">
+                      <h3 className="text-base sm:text-lg font-semibold text-[var(--app-foreground)] mb-2 line-clamp-2">
+                        {productTitle}
                       </h3>
-                      <p className="text-[var(--app-accent)] font-bold mt-1">
-                        {product.price}
+                      <p className="text-lg sm:text-xl font-bold text-[var(--app-accent)] mt-auto">
+                        {productPrice ? `$${productPrice.toFixed(2)}` : 'Price not available'}
                       </p>
-                      <a
-                        href={product.link}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-[var(--app-accent)] hover:underline mt-2 inline-block"
-                      >
-                        View on Amazon
-                      </a>
+                      {product.rating && (
+                        <div className="flex items-center mt-2">
+                          <div className="flex items-center">
+                            {[...Array(5)].map((_, i) => (
+                              <svg
+                                key={i}
+                                className={`w-4 h-4 ${
+                                  i < Math.floor(product.rating!) ? 'text-yellow-400' : 'text-gray-300'
+                                }`}
+                                fill="currentColor"
+                                viewBox="0 0 20 20"
+                              >
+                                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                              </svg>
+                            ))}
+                          </div>
+                          <span className="text-sm text-[var(--app-foreground-muted)] ml-2">
+                            {product.rating} ({product.reviews || 0} reviews)
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
-          )}
+          ) : hasSearched ? (
+            <div className="text-center py-8">
+              <Icon name="shopping-bag" className="mx-auto h-12 w-12 text-[var(--app-foreground-muted)]" />
+              <h3 className="mt-2 text-sm font-medium text-[var(--app-foreground)]">No products found</h3>
+              <p className="mt-1 text-sm text-[var(--app-foreground-muted)]">Try searching with different keywords.</p>
+            </div>
+          ) : null}
         </div>
       </Card>
 
@@ -288,7 +360,7 @@ export function Home({ setActiveTab }: HomeProps) {
 }
 
 type IconProps = {
-  name: "heart" | "star" | "check" | "plus" | "arrow-right";
+  name: "heart" | "star" | "check" | "plus" | "arrow-right" | "shopping-bag";
   size?: "sm" | "md" | "lg";
   className?: string;
 }
@@ -376,6 +448,23 @@ export function Icon({ name, size = "md", className = "" }: IconProps) {
         <title>Arrow Right</title>
         <line x1="5" y1="12" x2="19" y2="12" />
         <polyline points="12 5 19 12 12 19" />
+      </svg>
+    ),
+    "shopping-bag": (
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <title>Shopping Bag</title>
+        <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z" />
+        <path d="M3 6h18" />
+        <path d="M16 10a4 4 0 00-8 0" />
       </svg>
     ),
   };
