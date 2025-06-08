@@ -9,6 +9,7 @@ import { Name, Identity, Address, Avatar, EthBalance } from "@coinbase/onchainki
 import { Button } from "@/app/components/DemoComponents";
 import { Icon } from "@/app/components/DemoComponents";
 import { useOpenUrl } from "@coinbase/onchainkit/minikit";
+import CheckoutModal from '@/app/components/CheckoutModal';
 
 // Helper function to extract price from product data
 const extractPrice = (product: any): number | null => {
@@ -56,6 +57,7 @@ export default function ProductPage() {
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [selectedVariant, setSelectedVariant] = useState<any>(null);
   const [variants, setVariants] = useState<any[]>([]);
+  const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
 
   useEffect(() => {
     const fetchProduct = async () => {
@@ -379,12 +381,14 @@ export default function ProductPage() {
               )}
 
               {/* Buy Button */}
-              <button
-                onClick={() => router.push(`/checkout/${product.asin}`)}
-                className="w-full bg-indigo-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors duration-200"
-              >
-                Buy Now
-              </button>
+              <div className="mt-4">
+                <button
+                  onClick={() => setIsCheckoutOpen(true)}
+                  className="w-full bg-indigo-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors duration-200"
+                >
+                  Buy Now
+                </button>
+              </div>
 
               {/* Product Attributes */}
               <div className="space-y-2">
@@ -475,6 +479,20 @@ export default function ProductPage() {
           </Button>
         </footer>
       </div>
+
+      {product && (
+        <CheckoutModal
+          isOpen={isCheckoutOpen}
+          onClose={() => setIsCheckoutOpen(false)}
+          product={{
+            title: product.title,
+            price: extractPrice(product) || 0,
+            thumbnail: product.main_image,
+            asin: product.asin,
+            variant: selectedVariant?.displayTitle
+          }}
+        />
+      )}
     </div>
   );
 } 
