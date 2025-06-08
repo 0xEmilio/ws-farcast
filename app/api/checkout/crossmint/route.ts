@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { makeCrossmintRequest } from '@/app/utils/crossmint';
+import https from 'https';
+import { CROSSMINT_CONFIG } from '@/app/config/crossmint';
 
 // Helper function to uppercase string values in an object
 const uppercaseObjectValues = (obj: Record<string, any>): Record<string, any> => {
@@ -33,9 +34,28 @@ export async function POST(request: Request) {
     const uppercasedEmail = email.toUpperCase();
     const uppercasedShippingAddress = uppercaseObjectValues(shippingAddress);
 
-    const data = await makeCrossmintRequest('/api/2022-06-09/orders', {
+    const API_KEY = process.env.CROSSMINT_API_KEY;
+    if (!API_KEY) {
+      console.error('Crossmint API - API key not configured');
+      return NextResponse.json(
+        { error: 'API key not configured' },
+        { status: 500 }
+      );
+    }
+
+    // Create a custom agent that ignores SSL certificate validation in development
+    const agent = new https.Agent({
+      rejectUnauthorized: process.env.NODE_ENV === 'production'
+    });
+
+    // Send directly to Crossmint headless checkout with product locator
+    const checkoutResponse = await fetch(`${CROSSMINT_CONFIG.baseUrl}/api/2022-06-09/orders`, {
       method: 'POST',
-      body: {
+      headers: {
+        'X-API-KEY': API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
         recipient: {
           email: uppercasedEmail,
           physicalAddress: {
@@ -60,14 +80,27 @@ export async function POST(request: Request) {
             productLocator: `amazon:${asin}`
           }
         ]
-      }
+      }),
+      // @ts-ignore - agent is valid but TypeScript doesn't recognize it
+      agent
     });
 
-    return NextResponse.json(data);
+    console.log('Crossmint Checkout Order API - Response status:', checkoutResponse.status);
+    const checkoutData = await checkoutResponse.json();
+    console.log('Crossmint Checkout Order API - Response:', JSON.stringify(checkoutData, null, 2));
+
+    if (!checkoutResponse.ok) {
+      return NextResponse.json(
+        { error: checkoutData.message || 'Failed to create checkout session' },
+        { status: checkoutResponse.status }
+      );
+    }
+
+    return NextResponse.json(checkoutData);
   } catch (error) {
     console.error('Crossmint API - Error:', error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Internal server error' },
+      { error: 'Internal server error' },
       { status: 500 }
     );
   }

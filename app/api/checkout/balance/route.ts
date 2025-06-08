@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { makeCrossmintRequest } from '@/app/utils/crossmint';
+import { CROSSMINT_CONFIG } from '@/app/config/crossmint';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -13,14 +13,26 @@ export async function GET(request: Request) {
   }
 
   try {
-    const data = await makeCrossmintRequest(
-      `/api/v1-alpha2/wallets/${walletAddress}/balances?tokens=credit,usdc`
+    const response = await fetch(
+      `${CROSSMINT_CONFIG.baseUrl}/api/v1-alpha2/wallets/${walletAddress}/balances?tokens=credit,usdc`,
+      {
+        headers: {
+          'X-API-KEY': process.env.CROSSMINT_API_KEY || '',
+        },
+      }
     );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || 'Failed to fetch balances');
+    }
+
     return NextResponse.json(data);
   } catch (error) {
     console.error('Error fetching balances:', error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to fetch balances' },
+      { error: 'Failed to fetch balances' },
       { status: 500 }
     );
   }
