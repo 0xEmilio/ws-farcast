@@ -7,7 +7,7 @@ import { ConnectWallet } from "@coinbase/onchainkit/wallet";
 import { useAccount, useWalletClient, useSignMessage, useSendTransaction, useChainId } from 'wagmi';
 import { parseTransaction } from 'viem';
 import { useBalanceContext } from '../contexts/BalanceContext';
-import { mainnet, sepolia, base, baseSepolia } from 'wagmi/chains';
+import { base } from 'wagmi/chains';
 
 interface BuyButtonProps {
   product: {
@@ -106,18 +106,7 @@ export function BuyButton({ product, onBalanceUpdate }: BuyButtonProps) {
 
   // Get chain name from chainId
   const getChainName = (id: number) => {
-    switch (id) {
-      case mainnet.id:
-        return 'ethereum';
-      case sepolia.id:
-        return 'ethereum-sepolia';
-      case base.id:
-        return 'base';
-      case baseSepolia.id:
-        return 'base-sepolia';
-      default:
-        return 'ethereum-sepolia'; // Default to sepolia
-    }
+    return 'base';
   };
 
   // Get current chain name
@@ -602,27 +591,38 @@ export function BuyButton({ product, onBalanceUpdate }: BuyButtonProps) {
 
   // Update the faucet section in the review phase
   const renderFaucetSection = () => {
-    // Only show faucet for ethereum-sepolia and credit currency
-    if (chainId !== sepolia.id || selectedCurrency !== 'credit') {
+    // Only show faucet for base and credit currency
+    if (chainId !== base.id || selectedCurrency !== 'credit') {
       return null;
     }
 
-    const currentBalance = getCurrentBalance();
-    if (walletAddress && (formattedBalances[selectedCurrency] === undefined || (quote && !hasEnoughBalance(quote.totalPrice.amount)))) {
-      return (
-        <div className="mt-2">
-          {formattedBalances[selectedCurrency] === undefined ? (
-            <p className="text-gray-600 mb-2">Loading your credit balance...</p>
+    return (
+      <div className="mt-4 p-4 bg-[var(--app-gray)] rounded-lg">
+        <h3 className="text-lg font-semibold mb-2">Get Test Credits</h3>
+        <p className="text-sm text-[var(--app-foreground-muted)] mb-4">
+          You need test credits to complete this purchase. Click below to get some test credits.
+        </p>
+        <button
+          onClick={requestFaucet}
+          disabled={faucetStatus === 'requesting'}
+          className="w-full py-2 px-4 bg-[var(--app-accent)] text-white rounded-lg hover:bg-[var(--app-accent-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {faucetStatus === 'requesting' ? (
+            <span className="flex items-center justify-center">
+              <Loader2 className="animate-spin mr-2" />
+              Requesting Credits...
+            </span>
           ) : (
-            <p className="text-red-600 mb-2">You need {quote?.totalPrice.amount} CREDITS to complete this purchase.</p>
+            'Get Test Credits'
           )}
-          
-          {renderFaucetButton()}
-          {renderFaucetStatus()}
-        </div>
-      );
-    }
-    return null;
+        </button>
+        {faucetMessage && (
+          <p className={`mt-2 text-sm ${faucetStatus === 'error' ? 'text-red-500' : 'text-green-500'}`}>
+            {faucetMessage}
+          </p>
+        )}
+      </div>
+    );
   };
 
   const renderContent = () => {

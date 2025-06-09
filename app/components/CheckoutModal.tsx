@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { useAccount, useWalletClient, useSignMessage, useSendTransaction, useChainId } from 'wagmi';
 import { parseTransaction } from 'viem';
-import { mainnet, sepolia, base, baseSepolia } from 'wagmi/chains';
+import { base } from 'wagmi/chains';
 import { ConnectWallet, Wallet, WalletDropdown, WalletDropdownDisconnect } from "@coinbase/onchainkit/wallet";
 import { Name, Identity, Address, Avatar, EthBalance } from "@coinbase/onchainkit/identity";
 
@@ -72,18 +72,7 @@ export default function CheckoutModal({ isOpen, onClose, product }: CheckoutModa
 
   // Get chain name from chainId
   const getChainName = (id: number) => {
-    switch (id) {
-      case mainnet.id:
-        return 'ethereum';
-      case sepolia.id:
-        return 'ethereum-sepolia';
-      case base.id:
-        return 'base';
-      case baseSepolia.id:
-        return 'base-sepolia';
-      default:
-        return 'ethereum-sepolia'; // Default to sepolia
-    }
+    return 'base';
   };
 
   // Get current chain name
