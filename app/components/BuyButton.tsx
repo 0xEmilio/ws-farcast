@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Dialog } from '@headlessui/react';
 import { X, Loader2 } from 'lucide-react';
-import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { ConnectWallet } from "@coinbase/onchainkit/wallet";
 import { useAccount, useWalletClient, useSignMessage, useSendTransaction, useChainId } from 'wagmi';
 import { parseTransaction } from 'viem';
 import { useBalanceContext } from '../contexts/BalanceContext';
@@ -45,6 +45,29 @@ interface OrderData {
 
 type Currency = 'credit' | 'usdc';
 
+interface OrderResponse {
+  order: {
+    payment: {
+      status: string;
+      method: string;
+      currency: string;
+      preparation: {
+        chain: string;
+        payerAddress: string;
+      };
+    };
+    quote: {
+      status: string;
+      quotedAt: string;
+      expiresAt: string;
+      totalPrice: {
+        amount: string;
+        currency: string;
+      };
+    };
+  };
+}
+
 export function BuyButton({ product, onBalanceUpdate }: BuyButtonProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -78,6 +101,8 @@ export function BuyButton({ product, onBalanceUpdate }: BuyButtonProps) {
   const [refreshingQuote, setRefreshingQuote] = useState(false);
   const [selectedCurrency, setSelectedCurrency] = useState<Currency>('usdc');
   const [refreshingBalance, setRefreshingBalance] = useState(false);
+  const [orderResponse, setOrderResponse] = useState<OrderResponse | null>(null);
+  const [insufficientFunds, setInsufficientFunds] = useState(false);
 
   // Get chain name from chainId
   const getChainName = (id: number) => {
@@ -396,11 +421,6 @@ export function BuyButton({ product, onBalanceUpdate }: BuyButtonProps) {
       return;
     }
 
-    if (!chainId) {
-      setError('Please select a network first');
-      return;
-    }
-
     if (!email) {
       setError('Please enter your email');
       return;
@@ -416,69 +436,72 @@ export function BuyButton({ product, onBalanceUpdate }: BuyButtonProps) {
     setLoading(true);
 
     try {
-      const chainName = getChainName(chainId);
-      console.log('Sending request to Crossmint with data:', {
-        product,
-        email,
-        shippingAddress,
-        walletAddress,
-        chain: chainName,
-        currency: selectedCurrency
-      });
-
-      // Get quote first
       const response = await fetch('/api/checkout/crossmint', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          ...product,
+          product,
           email,
           shippingAddress,
-          walletAddress,
-          chain: chainName,
-          currency: selectedCurrency
+          currency: selectedCurrency,
         }),
       });
 
       const data = await response.json();
-      console.log('Crossmint API Response:', data);
-
-      if (!response.ok) {
-        console.error('Crossmint API Error:', data);
-        if (data.error?.includes('SELLER_CONFIG_INVALID')) {
-          throw new Error('Please double check your shipping address and try again');
-        }
-        throw new Error(data.error || 'Failed to get quote');
+      setOrderResponse(data);
+      
+      if (data.order.payment.status === 'crypto-payer-insufficient-funds') {
+        setInsufficientFunds(true);
+        setError(`Insufficient ${selectedCurrency.toUpperCase()} balance. You need ${data.order.quote.totalPrice.amount} ${selectedCurrency.toUpperCase()} to complete this purchase.`);
+        setQuote(data.order.quote);
+        setPhase('review');
+        return;
       }
 
-      // Log the structure of the response
-      console.log('Response structure:', {
-        hasOrder: !!data.order,
-        orderKeys: data.order ? Object.keys(data.order) : [],
-        hasQuote: data.order ? !!data.order.quote : false,
-        quoteData: data.order?.quote,
-        lineItems: data.order?.lineItems,
-      });
-
-      // The quote is in the order object
-      if (!data.order?.quote) {
-        console.error('No quote found in response:', data);
-        throw new Error('No quote received from Crossmint');
-      }
-
-      // Store all the necessary data
       setQuote(data.order.quote);
-      setOrderId(data.order.orderId);
-      setOrderData({
-        orderId: data.order.orderId,
-        payment: data.order.payment
-      });
       setPhase('review');
     } catch (err) {
-      console.error('Quote error:', err);
       setError(err instanceof Error ? err.message : 'Failed to get quote');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRefreshQuote = async () => {
+    setLoading(true);
+    setError(null);
+    setInsufficientFunds(false);
+    
+    try {
+      const response = await fetch('/api/checkout/crossmint', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          product,
+          email,
+          shippingAddress,
+          currency: selectedCurrency,
+        }),
+      });
+
+      const data = await response.json();
+      setOrderResponse(data);
+      
+      if (data.order.payment.status === 'crypto-payer-insufficient-funds') {
+        setInsufficientFunds(true);
+        setError(`Insufficient ${selectedCurrency.toUpperCase()} balance. You need ${data.order.quote.totalPrice.amount} ${selectedCurrency.toUpperCase()} to complete this purchase.`);
+        setQuote(data.order.quote);
+        return;
+      }
+
+      setInsufficientFunds(false);
+      setQuote(data.order.quote);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to refresh quote');
     } finally {
       setLoading(false);
     }
@@ -714,19 +737,24 @@ export function BuyButton({ product, onBalanceUpdate }: BuyButtonProps) {
               >
                 Back
               </button>
-              <button
-                onClick={handleFinalize}
-                disabled={loading || refreshingQuote || (quote !== null && !hasEnoughBalance(quote.totalPrice.amount))}
-                className="flex-1 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-blue-300"
-              >
-                {loading ? 'Processing...' : 
-                 refreshingQuote ? (
-                   <span className="flex items-center justify-center">
-                     <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                     Refreshing Quote...
-                   </span>
-                 ) : 'Finalize Order'}
-              </button>
+              {insufficientFunds ? (
+                <button
+                  onClick={handleRefreshQuote}
+                  disabled={loading}
+                  className="flex-1 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-blue-300"
+                >
+                  {loading ? 'Refreshing...' : 'Refresh Quote'}
+                </button>
+              ) : (
+                <button
+                  onClick={handleFinalize}
+                  disabled={loading || refreshingQuote}
+                  className="flex-1 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-blue-300"
+                >
+                  {loading ? 'Processing...' : 
+                   refreshingQuote ? 'Refreshing Quote...' : 'Finalize Order'}
+                </button>
+              )}
             </div>
           </div>
         );
@@ -809,7 +837,7 @@ export function BuyButton({ product, onBalanceUpdate }: BuyButtonProps) {
               <div className="bg-gray-50 p-4 rounded-lg">
                 <h4 className="font-medium text-gray-900 mb-2">Connect Wallet</h4>
                 <p className="text-sm text-gray-600 mb-4">Connect your wallet to proceed with checkout</p>
-                <ConnectButton />
+                <ConnectWallet />
                 {walletAddress && (
                   <div className="mt-4 pt-4 border-t border-gray-200">
                     <div className="flex items-center justify-between">

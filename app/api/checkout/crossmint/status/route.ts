@@ -33,6 +33,7 @@ export async function GET(request: Request) {
       {
         headers: {
           'X-API-KEY': API_KEY,
+          'origin': 'https://farcaster.xyz'
         },
         // @ts-ignore - agent is valid but TypeScript doesn't recognize it
         agent

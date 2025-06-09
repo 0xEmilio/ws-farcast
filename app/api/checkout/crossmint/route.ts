@@ -54,6 +54,7 @@ export async function POST(request: Request) {
       headers: {
         'X-API-KEY': API_KEY,
         'Content-Type': 'application/json',
+        'origin': 'https://farcaster.xyz'
       },
       body: JSON.stringify({
         recipient: {

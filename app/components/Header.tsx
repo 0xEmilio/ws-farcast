@@ -1,20 +1,15 @@
 'use client';
 
-import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { ConnectWallet } from "@coinbase/onchainkit/wallet";
 
 export function Header() {
   return (
-    <header className="bg-white shadow-sm">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between items-center h-16">
-          <div className="flex-shrink-0">
-            <h1 className="text-xl font-bold text-gray-900">WorldStore</h1>
-          </div>
-          <div className="flex items-center">
-            <ConnectButton />
-          </div>
-        </div>
+    <header className="flex items-center justify-between p-4 bg-white shadow-sm">
+      <div className="flex items-center space-x-2">
+        <img src="/logo.png" alt="Logo" className="h-8 w-8" />
+        <h1 className="text-xl font-bold">WorldStore</h1>
       </div>
+      <ConnectWallet />
     </header>
   );
 } 
