@@ -21,7 +21,7 @@ interface BuyButtonProps {
   onOrderCreated?: (data: {
     orderData: any;
     quote: any;
-    selectedCurrency: 'credit' | 'usdc';
+    selectedCurrency: 'usdc';
     email: string;
     shippingAddress: {
       name: string;

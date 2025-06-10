@@ -109,14 +109,16 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
   const chainId = useChainId();
   const { data: walletClient } = useWalletClient();
   const { signMessageAsync } = useSignMessage();
-  const { sendTransaction, isPending, isError, error: txError } = useSendTransaction();
+  const { sendTransaction, isPending, isError, error: txError, isSuccess, data: txData } = useSendTransaction();
   const { balances } = useBalanceContext();
   const [email, setEmail] = useState(initialOrderData?.email || '');
-  const { data: balance, refetch: refetchBalance } = useBalance({
+  const [balance, setBalance] = useState<string>('0');
+  const { data: balanceData, refetch: refetchBalance } = useBalance({
     address: walletAddress,
-    token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC token address
+    token: selectedCurrency === 'usdc' ? '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' : undefined, // USDC token address on Base
   });
   const [isConfirming, setIsConfirming] = useState(false);
+  const [orderStatus, setOrderStatus] = useState<'pending' | 'completed' | 'failed'>('pending');
 
   // Get chain name from chainId
   const getChainName = (id: number) => {
@@ -162,8 +164,10 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
 
   const hasInsufficientFunds = quote ? !hasEnoughBalance(quote.totalPrice.amount) : false;
 
-  const formatPrice = (price: string | number) => {
-    return `${price} ${selectedCurrency.toUpperCase()}`;
+  // Format price with 2 decimal places and currency
+  const formatPrice = (price: number | string) => {
+    const numPrice = typeof price === 'string' ? parseFloat(price) : price;
+    return `${numPrice.toFixed(2)} ${selectedCurrency.toUpperCase()}`;
   };
 
   const formatQuoteExpiration = (dateString: string) => {
@@ -432,20 +436,87 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
     onClose();
   };
 
-  // Function to check if balance is sufficient
-  const hasSufficientBalance = () => {
-    if (!balance || !quote) return false;
-    return Number(balance.formatted) >= Number(quote.totalPrice.amount);
+  // Function to fetch balance from Crossmint
+  const fetchBalance = async () => {
+    if (!walletAddress) return;
+    try {
+      const response = await fetch(`/api/checkout/balance?address=${walletAddress}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch balance');
+      }
+      const data = await response.json();
+      setBalance(data.balance || '0');
+    } catch (error) {
+      console.error('Error fetching balance:', error);
+      setError('Unable to fetch balance. Please try again.');
+    }
   };
+
+  // Initial balance fetch
+  useEffect(() => {
+    fetchBalance();
+  }, [walletAddress]);
 
   // Function to handle balance refresh
   const handleBalanceRefresh = async () => {
-    await refetchBalance();
-    // If balance becomes sufficient, update the quote
-    if (hasSufficientBalance()) {
-      setOrderData(null); // Reset order data to allow new quote
+    try {
+      console.log('Refreshing balance for:', {
+        address: walletAddress,
+        currentBalance: balance
+      });
+      await fetchBalance();
+      console.log('Balance refreshed:', balance);
+    } catch (error) {
+      console.error('Failed to refresh balance:', error);
+      setError('Unable to refresh balance. Please try again.');
     }
   };
+
+  // Function to check if balance is sufficient
+  const hasSufficientBalance = () => {
+    if (!balance || !quote) return false;
+    return Number(balance) >= Number(quote.totalPrice.amount);
+  };
+
+  // Poll for order status
+  useEffect(() => {
+    let pollInterval: NodeJS.Timeout;
+
+    const pollOrderStatus = async () => {
+      if (!orderData?.orderId || orderStatus === 'completed' || orderStatus === 'failed') return;
+
+      try {
+        const response = await fetch(`/api/checkout/crossmint/status?orderId=${orderData.orderId}`);
+        const data = await response.json();
+
+        console.log('Order status response:', data);
+
+        if (data.phase === 'completed') {
+          setOrderStatus('completed');
+          clearInterval(pollInterval);
+        } else if (data.phase === 'failed' || data.phase === 'cancelled') {
+          setOrderStatus('failed');
+          setError('Order failed to process. Please try again.');
+          clearInterval(pollInterval);
+        }
+      } catch (error) {
+        console.error('Error polling order status:', error);
+      }
+    };
+
+    if (isSuccess && orderData?.orderId) {
+      // Start polling immediately
+      pollOrderStatus();
+      // Then poll every second
+      pollInterval = setInterval(pollOrderStatus, 1000);
+    }
+
+    return () => {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+      }
+    };
+  }, [isSuccess, orderData?.orderId, orderStatus]);
 
   // Watch for transaction state changes
   useEffect(() => {
@@ -454,6 +525,7 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
       setIsConfirming(true);
     } else if (isError) {
       console.log('Transaction error:', txError);
+      
       // Check if it's a user rejection
       const errorMessage = txError?.message?.toLowerCase() || '';
       const isUserRejected = 
@@ -463,19 +535,45 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
         errorMessage.includes('rejected') ||
         errorMessage.includes('denied');
 
+      // Check if it's a revert
+      const isRevert = 
+        errorMessage.includes('revert') ||
+        errorMessage.includes('execution reverted') ||
+        errorMessage.includes('insufficient funds') ||
+        errorMessage.includes('gas required exceeds allowance') ||
+        errorMessage.includes('transaction underpriced');
+
+      console.log('Error analysis:', {
+        errorMessage,
+        isUserRejected,
+        isRevert,
+        error: txError
+      });
+
       if (isUserRejected) {
         console.log('🛑 User rejected the transaction');
         setIsConfirming(false);
         setLoading(false);
         setPhase('review');
+      } else if (isRevert) {
+        console.log('🔄 Transaction reverted');
+        setError('Transaction failed: ' + (txError?.message || 'Unknown error'));
+        setPhase('error');
+        setIsConfirming(false);
+        setLoading(false);
       } else {
         setError(txError?.message || 'Transaction failed');
         setPhase('error');
         setIsConfirming(false);
         setLoading(false);
       }
+    } else if (isSuccess) {
+      console.log('Transaction successful:', txData);
+      setPhase('processing');
+      setIsConfirming(false);
+      setLoading(false);
     }
-  }, [isPending, isError, txError]);
+  }, [isPending, isError, txError, isSuccess, txData]);
 
   const renderDetailsContent = () => {
     return (
@@ -694,6 +792,40 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
       );
     }
 
+    if (phase === 'success') {
+      return (
+        <div className="flex flex-col items-center justify-center space-y-4 py-8">
+          {orderStatus === 'pending' ? (
+            <>
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div>
+              <p className="text-lg font-medium text-gray-900">Transaction sent successfully!</p>
+              <p className="text-sm text-gray-500">Processing your order...</p>
+            </>
+          ) : orderStatus === 'completed' ? (
+            <>
+              <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
+                <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <p className="text-lg font-medium text-gray-900">Order Successful!</p>
+              <p className="text-sm text-gray-500">Your order has been placed successfully.</p>
+            </>
+          ) : (
+            <>
+              <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
+                <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </div>
+              <p className="text-lg font-medium text-gray-900">Order Failed</p>
+              <p className="text-sm text-gray-500">There was an error processing your order.</p>
+            </>
+          )}
+        </div>
+      );
+    }
+
     return (
       <div className="space-y-6">
         {/* Product Details */}
@@ -723,35 +855,36 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
               <h3 className="text-lg font-medium text-gray-900">Quote Details</h3>
               <div className="space-y-2">
                 <div className="flex justify-between text-sm">
-                  <span className="text-gray-500">Price:</span>
+                  <span className="text-gray-500">Item Price:</span>
+                  <span className="text-gray-900">{formatPrice(product.price)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Fulfillment Fees:</span>
+                  <span className="text-gray-900">{formatPrice(Number(quote.totalPrice.amount) - Number(product.price))}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Total Price:</span>
                   <span className="text-gray-900">{formatPrice(quote.totalPrice.amount)}</span>
                 </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-500">Expires in:</span>
-                  <span className="text-gray-900">{formatQuoteExpiration(quote.expiresAt)}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-500">Your Balance:</span>
-                  <div className="flex items-center space-x-2">
-                    <span className="text-gray-900">
-                      {balance ? `${Number(balance.formatted).toFixed(4)} ${balance.symbol}` : 'Loading...'}
-                    </span>
-                    <button
-                      onClick={handleReview}
-                      className="p-1 hover:bg-gray-200 rounded-full transition-colors"
-                      title="Refresh balance"
-                    >
-                      <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-                <div className="border-t border-gray-200 pt-2 mt-2">
-                  <div className="flex justify-between font-medium">
-                    <span className="text-gray-900">Total:</span>
-                    <span className="text-gray-900">{formatPrice(quote.totalPrice.amount)}</span>
-                  </div>
+              </div>
+
+              <div className="border-t border-gray-200 my-4"></div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-500">Your Balance:</span>
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm font-medium text-gray-900">
+                    {balance ? `${Number(balance).toFixed(2)} ${selectedCurrency.toUpperCase()}` : '0.00 USDC'}
+                  </span>
+                  <button
+                    onClick={handleBalanceRefresh}
+                    className="p-1 text-gray-400 hover:text-gray-500"
+                    title="Refresh balance"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </button>
                 </div>
               </div>
             </div>
