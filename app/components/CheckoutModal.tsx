@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { X, Loader2 } from 'lucide-react';
 import { ConnectWallet } from "@coinbase/onchainkit/wallet";
-import { useAccount, useWalletClient, useSignMessage, useSendTransaction, useChainId, useDisconnect } from 'wagmi';
+import { useAccount, useWalletClient, useSignMessage, useSendTransaction, useChainId, useDisconnect, useBalance } from 'wagmi';
 import { parseTransaction } from 'viem';
 import { useBalanceContext } from '../contexts/BalanceContext';
 import { base } from 'wagmi/chains';
@@ -88,17 +88,13 @@ interface Balance {
 }
 
 export default function CheckoutModal({ isOpen, onClose, product, initialOrderData, onOrderCreated }: CheckoutModalProps) {
+  const [phase, setPhase] = useState<'details' | 'review' | 'signing' | 'processing' | 'success' | 'error'>('details');
+  const [orderId, setOrderId] = useState<string | null>(null);
+  const [quote, setQuote] = useState<Quote | null>(null);
+  const [orderData, setOrderData] = useState<OrderData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { address: walletAddress } = useAccount();
-  const { disconnect } = useDisconnect();
-  const chainId = useChainId();
-  const { data: walletClient } = useWalletClient();
-  const { signMessageAsync } = useSignMessage();
-  const { sendTransaction } = useSendTransaction();
-  const { balances } = useBalanceContext();
-  const [email, setEmail] = useState(initialOrderData?.email || '');
-  const [shippingAddress, setShippingAddress] = useState(initialOrderData?.shippingAddress || {
+  const [shippingAddress, setShippingAddress] = useState({
     name: '',
     address1: '',
     address2: '',
@@ -107,12 +103,21 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
     postalCode: '',
     country: 'US'
   });
-  const [phase, setPhase] = useState<CheckoutPhase>(initialOrderData ? 'review' : 'details');
-  const [orderId, setOrderId] = useState<string | null>(initialOrderData?.orderId || null);
-  const [orderStatus, setOrderStatus] = useState<string | null>(null);
-  const [quote, setQuote] = useState<Quote | null>(initialOrderData?.quote || null);
-  const [orderData, setOrderData] = useState<OrderData | null>(null);
   const [selectedCurrency, setSelectedCurrency] = useState<Currency>('usdc');
+  const { address: walletAddress } = useAccount();
+  const { disconnect } = useDisconnect();
+  const chainId = useChainId();
+  const { data: walletClient } = useWalletClient();
+  const { signMessageAsync } = useSignMessage();
+  const { sendTransaction } = useSendTransaction();
+  const { balances } = useBalanceContext();
+  const [email, setEmail] = useState(initialOrderData?.email || '');
+  const { data: balance, refetch: refetchBalance } = useBalance({
+    address: walletAddress,
+    token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC token address
+  });
+  const [isConfirming, setIsConfirming] = useState(false);
+  const [confirmationTimeout, setConfirmationTimeout] = useState<NodeJS.Timeout | null>(null);
 
   // Get chain name from chainId
   const getChainName = (id: number) => {
@@ -191,7 +196,6 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
     });
     setPhase('details');
     setOrderId(null);
-    setOrderStatus(null);
     setQuote(null);
     setOrderData(null);
     setSelectedCurrency('usdc');
@@ -386,6 +390,7 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
     }
 
     setLoading(true);
+    setIsConfirming(true);
     setError(null);
     setPhase('signing');
 
@@ -405,11 +410,49 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
 
       console.log('Transaction sent:', result);
       setPhase('processing');
+
+      // Set a timeout to return to review if no transaction is submitted
+      const timeout = setTimeout(() => {
+        setIsConfirming(false);
+        setLoading(false);
+        setError('Transaction not submitted. Please try again.');
+        setPhase('review');
+      }, 30000); // 30 seconds timeout
+      setConfirmationTimeout(timeout);
+
     } catch (err) {
       console.error('Checkout error:', err);
+      
+      // Handle wallet cancellation
+      if (err instanceof Error) {
+        const errorMessage = err.message.toLowerCase();
+        console.log('Error message:', errorMessage);
+        
+        if (
+          errorMessage.includes('user rejected') ||
+          errorMessage.includes('user denied') ||
+          errorMessage.includes('user cancelled') ||
+          errorMessage.includes('user canceled') ||
+          errorMessage.includes('rejected') ||
+          errorMessage.includes('denied') ||
+          errorMessage.includes('cancelled') ||
+          errorMessage.includes('canceled') ||
+          errorMessage.includes('user declined') ||
+          errorMessage.includes('declined')
+        ) {
+          console.log('Detected wallet cancellation');
+          setError('Transaction cancelled. You can try again when ready.');
+          setPhase('review');
+          setIsConfirming(false);
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Handle other errors
       setError(err instanceof Error ? err.message : 'Failed to process checkout');
       setPhase('error');
-    } finally {
+      setIsConfirming(false);
       setLoading(false);
     }
   };
@@ -427,6 +470,21 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
     console.log('Modal closing, resetting state');
     resetModal();
     onClose();
+  };
+
+  // Function to check if balance is sufficient
+  const hasSufficientBalance = () => {
+    if (!balance || !quote) return false;
+    return Number(balance.formatted) >= Number(quote.totalPrice.amount);
+  };
+
+  // Function to handle balance refresh
+  const handleBalanceRefresh = async () => {
+    await refetchBalance();
+    // If balance becomes sufficient, update the quote
+    if (hasSufficientBalance()) {
+      setOrderData(null); // Reset order data to allow new quote
+    }
   };
 
   const renderDetailsContent = () => {
@@ -499,7 +557,6 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
                 className="w-full appearance-none rounded-lg border-2 border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-900 shadow-sm hover:border-gray-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
               >
                 <option value="usdc">USDC</option>
-                <option value="credit">CREDITS</option>
               </select>
               <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
                 <svg className="h-4 w-4 fill-current" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
@@ -621,6 +678,17 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
 
     // Check for insufficient funds error in the order response
     const hasInsufficientFunds = orderData.payment?.status === 'crypto-payer-insufficient-funds';
+    const canFinalize = hasSufficientBalance();
+
+    if (isConfirming) {
+      return (
+        <div className="flex flex-col items-center justify-center space-y-4 py-8">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div>
+          <p className="text-lg font-medium text-gray-900">Confirming transaction...</p>
+          <p className="text-sm text-gray-500">Please check your wallet to approve the transaction</p>
+        </div>
+      );
+    }
 
     return (
       <div className="space-y-6">
@@ -646,24 +714,52 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
 
         {/* Quote Details */}
         {quote && (
-          <div className="bg-gray-50 rounded-lg p-4 space-y-3">
-            <h3 className="text-lg font-medium text-gray-900">Quote Details</h3>
-            <div className="space-y-2">
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-500">Price:</span>
-                <span className="text-gray-900">{formatPrice(quote.totalPrice.amount)}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-500">Expires in:</span>
-                <span className="text-gray-900">{formatQuoteExpiration(quote.expiresAt)}</span>
-              </div>
-              <div className="border-t border-gray-200 pt-2 mt-2">
-                <div className="flex justify-between font-medium">
-                  <span className="text-gray-900">Total:</span>
+          <div className="space-y-3">
+            <div className="bg-gray-50 rounded-lg p-4 space-y-3">
+              <h3 className="text-lg font-medium text-gray-900">Quote Details</h3>
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Price:</span>
                   <span className="text-gray-900">{formatPrice(quote.totalPrice.amount)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Expires in:</span>
+                  <span className="text-gray-900">{formatQuoteExpiration(quote.expiresAt)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Your Balance:</span>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-gray-900">
+                      {balance ? `${Number(balance.formatted).toFixed(4)} ${balance.symbol}` : 'Loading...'}
+                    </span>
+                    <button
+                      onClick={handleReview}
+                      className="p-1 hover:bg-gray-200 rounded-full transition-colors"
+                      title="Refresh balance"
+                    >
+                      <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div className="border-t border-gray-200 pt-2 mt-2">
+                  <div className="flex justify-between font-medium">
+                    <span className="text-gray-900">Total:</span>
+                    <span className="text-gray-900">{formatPrice(quote.totalPrice.amount)}</span>
+                  </div>
                 </div>
               </div>
             </div>
+
+            {hasInsufficientFunds && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-600 flex items-center space-x-2">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <span>Insufficient {selectedCurrency.toUpperCase()} balance. Please go back to change your wallet, currency, or top up your balance.</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -689,15 +785,6 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
           </div>
         </div>
 
-        {hasInsufficientFunds && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-600 flex items-center space-x-2">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            <span>Insufficient {selectedCurrency.toUpperCase()} balance. Please go back to change your wallet, currency, or top up your balance.</span>
-          </div>
-        )}
-
         <div className="flex justify-between space-x-4">
           <div className="flex space-x-4">
             <button
@@ -714,7 +801,7 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
             </button>
           </div>
           <button
-            onClick={handleFinalize}
+            onClick={canFinalize ? handleFinalize : handleDetailsSubmit}
             disabled={loading || hasInsufficientFunds}
             className={`px-4 py-2 text-sm font-medium text-white rounded-lg ${
               loading || hasInsufficientFunds
@@ -722,7 +809,7 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
                 : 'bg-black hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black'
             }`}
           >
-            {loading ? 'Processing...' : 'Finalize Order'}
+            {loading ? 'Processing...' : canFinalize ? 'Finalize Order' : 'Update Quote'}
           </button>
         </div>
       </div>
@@ -805,9 +892,53 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-[425px] bg-white max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Checkout</DialogTitle>
+          <DialogTitle>
+            {phase === 'signing' || phase === 'processing' ? 'Confirming Transaction' : 'Checkout'}
+          </DialogTitle>
         </DialogHeader>
-        {renderContent()}
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-600">
+            {error}
+          </div>
+        )}
+        {phase === 'details' && renderDetailsContent()}
+        {phase === 'review' && renderReviewContent()}
+        {phase === 'signing' && (
+          <div className="flex flex-col items-center justify-center space-y-4 py-8">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div>
+            <p className="text-lg font-medium text-gray-900">Confirming transaction...</p>
+            <p className="text-sm text-gray-500">Please check your wallet to approve the transaction</p>
+          </div>
+        )}
+        {phase === 'processing' && (
+          <div className="flex flex-col items-center justify-center space-y-4 py-8">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div>
+            <p className="text-lg font-medium text-gray-900">Processing transaction...</p>
+            <p className="text-sm text-gray-500">Please wait while we process your transaction</p>
+          </div>
+        )}
+        {phase === 'success' && (
+          <div className="text-center py-8">
+            <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-green-100 mb-4">
+              <svg className="h-6 w-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <h3 className="text-lg font-medium text-gray-900 mb-2">Order Successful!</h3>
+            <p className="text-sm text-gray-500">Your order has been placed successfully.</p>
+          </div>
+        )}
+        {phase === 'error' && (
+          <div className="text-center py-8">
+            <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-red-100 mb-4">
+              <svg className="h-6 w-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </div>
+            <h3 className="text-lg font-medium text-gray-900 mb-2">Order Failed</h3>
+            <p className="text-sm text-gray-500">{error || 'There was an error processing your order.'}</p>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );
