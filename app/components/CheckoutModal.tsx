@@ -5,12 +5,23 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { X, Loader2 } from 'lucide-react';
 import { ConnectWallet } from "@coinbase/onchainkit/wallet";
 import { useAccount, useWalletClient, useSignMessage, useSendTransaction, useChainId, useDisconnect, useBalance } from 'wagmi';
-import { parseTransaction } from 'viem';
+import { parseTransaction, parseEther } from 'viem';
 import { useBalanceContext } from '../contexts/BalanceContext';
 import { base } from 'wagmi/chains';
 import { Name, Identity, Address, Avatar, EthBalance } from "@coinbase/onchainkit/identity";
 import { Wallet, WalletDropdown, WalletDropdownDisconnect } from "@coinbase/onchainkit/wallet";
 import { XMarkIcon } from '@heroicons/react/24/outline';
+
+interface TransactionData {
+  hash: `0x${string}`;
+  blockNumber?: bigint;
+  confirmations?: bigint;
+  gasUsed?: bigint;
+  effectiveGasPrice?: bigint;
+  blockHash?: `0x${string}`;
+  blockTimestamp?: bigint;
+  from?: `0x${string}`;
+}
 
 interface CheckoutModalProps {
   isOpen: boolean;
@@ -621,24 +632,38 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
       setPhase('processing');
       setIsConfirming(false);
       setLoading(false);
-      setTransactionHash(txData.hash);
+      
+      // Set transaction hash directly
+      setTransactionHash(txData);
       setTransactionStatus('success');
       setTransactionResult('Transaction sent successfully');
       setTransactionReceipt('Transaction has been sent to the network');
-      setTransactionBlockNumber(txData.blockNumber?.toString() || null);
-      setTransactionConfirmations(txData.confirmations?.toString() || null);
-      setTransactionGasUsed(txData.gasUsed?.toString() || null);
-      setTransactionEffectiveGasPrice(txData.effectiveGasPrice?.toString() || null);
-      setTransactionBlockHash(txData.blockHash || null);
-      setTransactionBlockTimestamp(txData.blockTimestamp?.toString() || null);
-      setTransactionFrom(txData.from || null);
+      
+      // Get transaction details from the receipt
+      const getTransactionDetails = async () => {
+        try {
+          const response = await fetch(`/api/checkout/transaction/${txData}`);
+          const details = await response.json();
+          setTransactionBlockNumber(details.blockNumber?.toString() || null);
+          setTransactionConfirmations(details.confirmations?.toString() || null);
+          setTransactionGasUsed(details.gasUsed?.toString() || null);
+          setTransactionEffectiveGasPrice(details.effectiveGasPrice?.toString() || null);
+          setTransactionBlockHash(details.blockHash || null);
+          setTransactionBlockTimestamp(details.blockTimestamp?.toString() || null);
+          setTransactionFrom(details.from || null);
+        } catch (error) {
+          console.error('Error fetching transaction details:', error);
+        }
+      };
+      
+      getTransactionDetails();
     } else if (isError && txError) {
       console.error('Transaction error:', txError);
       
       // Check if it's a user rejection
       const errorMessage = txError?.message?.toLowerCase() || '';
       const isUserRejected = 
-        txError?.code === 4001 || 
+        (txError as any)?.code === 4001 || 
         errorMessage.includes('user denied') || 
         errorMessage.includes('user rejected') ||
         errorMessage.includes('rejected') ||
