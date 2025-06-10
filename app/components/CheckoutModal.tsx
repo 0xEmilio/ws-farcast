@@ -109,7 +109,7 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
   const chainId = useChainId();
   const { data: walletClient } = useWalletClient();
   const { signMessageAsync } = useSignMessage();
-  const { sendTransaction } = useSendTransaction();
+  const { sendTransaction, isPending, isError, error: txError } = useSendTransaction();
   const { balances } = useBalanceContext();
   const [email, setEmail] = useState(initialOrderData?.email || '');
   const { data: balance, refetch: refetchBalance } = useBalance({
@@ -117,7 +117,6 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
     token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC token address
   });
   const [isConfirming, setIsConfirming] = useState(false);
-  const [confirmationTimeout, setConfirmationTimeout] = useState<NodeJS.Timeout | null>(null);
 
   // Get chain name from chainId
   const getChainName = (id: number) => {
@@ -390,9 +389,7 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
     }
 
     setLoading(true);
-    setIsConfirming(true);
     setError(null);
-    setPhase('signing');
 
     try {
       const { serializedTransaction } = orderData.payment.preparation;
@@ -401,55 +398,18 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
       
       console.log('Parsed transaction:', tx);
 
-      const result = await sendTransaction({
+      await sendTransaction({
         to: tx.to as `0x${string}`,
         data: tx.data as `0x${string}`,
         value: BigInt(0),
         chainId: Number(tx.chainId)
       });
 
-      console.log('Transaction sent:', result);
+      // Note: We don't need to handle success/error here as the useEffect will handle it
       setPhase('processing');
-
-      // Set a timeout to return to review if no transaction is submitted
-      const timeout = setTimeout(() => {
-        setIsConfirming(false);
-        setLoading(false);
-        setError('Transaction not submitted. Please try again.');
-        setPhase('review');
-      }, 30000); // 30 seconds timeout
-      setConfirmationTimeout(timeout);
 
     } catch (err) {
       console.error('Checkout error:', err);
-      
-      // Handle wallet cancellation
-      if (err instanceof Error) {
-        const errorMessage = err.message.toLowerCase();
-        console.log('Error message:', errorMessage);
-        
-        if (
-          errorMessage.includes('user rejected') ||
-          errorMessage.includes('user denied') ||
-          errorMessage.includes('user cancelled') ||
-          errorMessage.includes('user canceled') ||
-          errorMessage.includes('rejected') ||
-          errorMessage.includes('denied') ||
-          errorMessage.includes('cancelled') ||
-          errorMessage.includes('canceled') ||
-          errorMessage.includes('user declined') ||
-          errorMessage.includes('declined')
-        ) {
-          console.log('Detected wallet cancellation');
-          setError('Transaction cancelled. You can try again when ready.');
-          setPhase('review');
-          setIsConfirming(false);
-          setLoading(false);
-          return;
-        }
-      }
-      
-      // Handle other errors
       setError(err instanceof Error ? err.message : 'Failed to process checkout');
       setPhase('error');
       setIsConfirming(false);
@@ -486,6 +446,36 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
       setOrderData(null); // Reset order data to allow new quote
     }
   };
+
+  // Watch for transaction state changes
+  useEffect(() => {
+    if (isPending) {
+      setPhase('signing');
+      setIsConfirming(true);
+    } else if (isError) {
+      console.log('Transaction error:', txError);
+      // Check if it's a user rejection
+      const errorMessage = txError?.message?.toLowerCase() || '';
+      const isUserRejected = 
+        txError?.code === 4001 || 
+        errorMessage.includes('user denied') || 
+        errorMessage.includes('user rejected') ||
+        errorMessage.includes('rejected') ||
+        errorMessage.includes('denied');
+
+      if (isUserRejected) {
+        console.log('🛑 User rejected the transaction');
+        setIsConfirming(false);
+        setLoading(false);
+        setPhase('review');
+      } else {
+        setError(txError?.message || 'Transaction failed');
+        setPhase('error');
+        setIsConfirming(false);
+        setLoading(false);
+      }
+    }
+  }, [isPending, isError, txError]);
 
   const renderDetailsContent = () => {
     return (
@@ -653,6 +643,13 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
           </div>
         </div>
 
+        
+        {error && (
+            <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-600">
+              {error}
+            </div>
+          )}
+
         {/* Action Buttons */}
         <div className="flex justify-end space-x-4">
           <button
@@ -666,7 +663,8 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
             disabled={loading || !walletAddress}
             className="px-4 py-2 text-sm font-medium text-white bg-black rounded-lg hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Continue to Review'}
+            {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Review Order'}
+            
           </button>
         </div>
       </div>
@@ -684,8 +682,14 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
       return (
         <div className="flex flex-col items-center justify-center space-y-4 py-8">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div>
-          <p className="text-lg font-medium text-gray-900">Confirming transaction...</p>
-          <p className="text-sm text-gray-500">Please check your wallet to approve the transaction</p>
+          <p className="text-lg font-medium text-gray-900">
+            {phase === 'signing' ? 'Confirming transaction...' : 'Processing transaction...'}
+          </p>
+          <p className="text-sm text-gray-500">
+            {phase === 'signing' 
+              ? 'Please check your wallet to approve the transaction'
+              : 'Please wait while we process your transaction'}
+          </p>
         </div>
       );
     }
