@@ -10,6 +10,7 @@ import { useBalanceContext } from '../contexts/BalanceContext';
 import { base } from 'wagmi/chains';
 import { Name, Identity, Address, Avatar, EthBalance } from "@coinbase/onchainkit/identity";
 import { Wallet, WalletDropdown, WalletDropdownDisconnect } from "@coinbase/onchainkit/wallet";
+import { XMarkIcon } from '@heroicons/react/24/outline';
 
 interface CheckoutModalProps {
   isOpen: boolean;
@@ -119,6 +120,33 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
   });
   const [isConfirming, setIsConfirming] = useState(false);
   const [orderStatus, setOrderStatus] = useState<'pending' | 'completed' | 'failed'>('pending');
+  const [transactionHash, setTransactionHash] = useState<string | null>(null);
+  const [transactionError, setTransactionError] = useState<string | null>(null);
+  const [transactionStatus, setTransactionStatus] = useState<string | null>(null);
+  const [transactionResult, setTransactionResult] = useState<string | null>(null);
+  const [transactionReceipt, setTransactionReceipt] = useState<string | null>(null);
+  const [transactionBlockNumber, setTransactionBlockNumber] = useState<string | null>(null);
+  const [transactionConfirmations, setTransactionConfirmations] = useState<string | null>(null);
+  const [transactionGasUsed, setTransactionGasUsed] = useState<string | null>(null);
+  const [transactionEffectiveGasPrice, setTransactionEffectiveGasPrice] = useState<string | null>(null);
+  const [transactionBlockHash, setTransactionBlockHash] = useState<string | null>(null);
+  const [transactionBlockTimestamp, setTransactionBlockTimestamp] = useState<string | null>(null);
+  const [transactionFrom, setTransactionFrom] = useState<string | null>(null);
+  const [transactionTo, setTransactionTo] = useState<string | null>(null);
+  const [transactionValue, setTransactionValue] = useState<string | null>(null);
+  const [transactionInput, setTransactionInput] = useState<string | null>(null);
+  const [transactionNonce, setTransactionNonce] = useState<string | null>(null);
+  const [transactionR, setTransactionR] = useState<string | null>(null);
+  const [transactionS, setTransactionS] = useState<string | null>(null);
+  const [transactionV, setTransactionV] = useState<string | null>(null);
+  const [transactionType, setTransactionType] = useState<string | null>(null);
+  const [transactionAccessList, setTransactionAccessList] = useState<string | null>(null);
+  const [transactionChainId, setTransactionChainId] = useState<string | null>(null);
+  const [transactionMaxFeePerGas, setTransactionMaxFeePerGas] = useState<string | null>(null);
+  const [transactionMaxPriorityFeePerGas, setTransactionMaxPriorityFeePerGas] = useState<string | null>(null);
+  const [transactionYParity, setTransactionYParity] = useState<string | null>(null);
+  const [transactionSignature, setTransactionSignature] = useState<string | null>(null);
+  const [transactionRaw, setTransactionRaw] = useState<string | null>(null);
 
   // Get chain name from chainId
   const getChainName = (id: number) => {
@@ -145,24 +173,24 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
     return decimalValue.toFixed(2);
   };
 
-  // Convert decimal amount to proper decimal places for comparison
-  const convertToRawAmount = (amount: string | number) => {
-    const balance = balances.find(b => b.token === selectedCurrency);
-    if (!balance) return '0';
-    const amountStr = amount.toString();
-    const [whole, fraction = ''] = amountStr.split('.');
-    const paddedFraction = fraction.padEnd(balance.decimals, '0');
-    return `${whole}${paddedFraction}`;
+  // Function to convert amount to raw amount based on token decimals
+  const convertToRawAmount = (amount: string, token: string): string => {
+    if (!balances) return '0';
+    const tokenInfo = balances.find(b => b.token === token);
+    if (!tokenInfo) return '0';
+    return (Number(amount) * Math.pow(10, tokenInfo.decimals)).toString();
   };
 
-  // Compare raw balance values
-  const hasEnoughBalance = (requiredAmount: string | number) => {
-    const currentBalance = getCurrentBalance();
-    const rawRequiredAmount = convertToRawAmount(requiredAmount);
-    return BigInt(currentBalance) >= BigInt(rawRequiredAmount);
+  // Function to check if user has enough balance
+  const hasEnoughBalance = (): boolean => {
+    if (!balances || !quote) return false;
+    const rawAmount = convertToRawAmount(quote.totalPrice.amount, selectedCurrency);
+    const tokenInfo = balances.find(b => b.token === selectedCurrency);
+    if (!tokenInfo) return false;
+    return Number(tokenInfo.balances.base) >= Number(rawAmount);
   };
 
-  const hasInsufficientFunds = quote ? !hasEnoughBalance(quote.totalPrice.amount) : false;
+  const hasInsufficientFunds = quote ? !hasEnoughBalance() : false;
 
   // Format price with 2 decimal places and currency
   const formatPrice = (price: number | string) => {
@@ -257,16 +285,6 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
       console.log('Response status:', response.status);
       console.log('Response headers:', Object.fromEntries(response.headers.entries()));
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('API Error:', {
-          status: response.status,
-          statusText: response.statusText,
-          data: errorData
-        });
-        throw new Error(errorData.error || 'Failed to create order');
-      }
-
       const data = await response.json();
       console.log('API Response:', data);
 
@@ -319,6 +337,9 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
     setLoading(true);
 
     try {
+      // Refresh balance before proceeding
+      await handleBalanceRefresh();
+
       const chainName = getChainName(chainId);
       const requestData = {
         ...product,
@@ -380,22 +401,21 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
   };
 
   const handleFinalize = async () => {
-    console.log('handleFinalize called with state:', {
-      walletClient: !!walletClient,
-      orderData,
-      selectedCurrency
-    });
-
-    if (!walletClient || !orderData?.payment?.preparation?.serializedTransaction) {
-      console.error('Invalid order data:', orderData);
-      setError('Unable to process your order. Please try again.');
+    if (!walletClient || !walletAddress || !quote || !orderData?.payment?.preparation?.serializedTransaction) {
+      setError('Wallet not connected or quote not available');
       return;
     }
 
-    setLoading(true);
-    setError(null);
+    // Ensure we're on Base mainnet
+    if (chainId !== 8453) {
+      setError('Please connect to Base mainnet');
+      return;
+    }
 
     try {
+      setIsConfirming(true);
+      setError(null);
+
       const { serializedTransaction } = orderData.payment.preparation;
       const txHex = serializedTransaction.startsWith('0x') ? serializedTransaction : `0x${serializedTransaction}`;
       const tx = parseTransaction(txHex as `0x${string}`);
@@ -422,17 +442,59 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
   };
 
   const handleBack = () => {
-    // Reset order-related state
-    setOrderData(null);
-    setQuote(null);
-    setOrderId(null);
-    // Return to details phase
-    setPhase('details');
+    console.log('Back button clicked, current phase:', phase);
+    if (phase === 'review') {
+      setPhase('details');
+      setLoading(false);
+      setIsConfirming(false);
+      setError(null);
+    }
   };
 
   const handleClose = () => {
-    console.log('Modal closing, resetting state');
-    resetModal();
+    // Only prevent reset if we're actively polling for order completion
+    if (isSuccess && orderData?.orderId && !orderStatus) {
+      console.log('Preventing modal close while polling for order completion');
+      return;
+    }
+
+    // Reset all states except order status
+    setPhase('details');
+    setOrderData(null);
+    setQuote(null);
+    setError(null);
+    setEmail('');
+    setBalance('0');
+    // Don't reset orderStatus here
+    setIsConfirming(false);
+    setLoading(false);
+    setTransactionHash(null);
+    setTransactionError(null);
+    setTransactionStatus(null);
+    setTransactionResult(null);
+    setTransactionReceipt(null);
+    setTransactionBlockNumber(null);
+    setTransactionConfirmations(null);
+    setTransactionGasUsed(null);
+    setTransactionEffectiveGasPrice(null);
+    setTransactionBlockHash(null);
+    setTransactionBlockTimestamp(null);
+    setTransactionFrom(null);
+    setTransactionTo(null);
+    setTransactionValue(null);
+    setTransactionInput(null);
+    setTransactionNonce(null);
+    setTransactionR(null);
+    setTransactionS(null);
+    setTransactionV(null);
+    setTransactionType(null);
+    setTransactionAccessList(null);
+    setTransactionChainId(null);
+    setTransactionMaxFeePerGas(null);
+    setTransactionMaxPriorityFeePerGas(null);
+    setTransactionYParity(null);
+    setTransactionSignature(null);
+    setTransactionRaw(null);
     onClose();
   };
 
@@ -478,53 +540,100 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
     return Number(balance) >= Number(quote.totalPrice.amount);
   };
 
-  // Poll for order status
+  const pollOrderStatus = async () => {
+    if (!orderId) {
+      console.error('No orderId available for polling');
+      return false;
+    }
+    
+    try {
+      console.log('Polling status for orderId:', orderId);
+      const response = await fetch(`/api/checkout/crossmint/status?orderId=${orderId}`);
+      const order = await response.json();
+      console.log('Polling... result:', order);
+
+      if (order.phase === 'completed') {
+        setOrderStatus('completed');
+        setPhase('success');
+        setLoading(false);
+        return true;
+      } else if (order.phase === 'failed') {
+        setOrderStatus('failed');
+        setError('Order failed to process');
+        setPhase('error');
+        setLoading(false);
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('Error polling order status:', error);
+      return false;
+    }
+  };
+
+  // Poll for order status when in processing phase
   useEffect(() => {
     let pollInterval: NodeJS.Timeout;
 
-    const pollOrderStatus = async () => {
-      if (!orderData?.orderId || orderStatus === 'completed' || orderStatus === 'failed') return;
-
-      try {
-        const response = await fetch(`/api/checkout/crossmint/status?orderId=${orderData.orderId}`);
-        const data = await response.json();
-
-        console.log('Order status response:', data);
-
-        if (data.phase === 'completed') {
-          setOrderStatus('completed');
-          clearInterval(pollInterval);
-        } else if (data.phase === 'failed' || data.phase === 'cancelled') {
-          setOrderStatus('failed');
-          setError('Order failed to process. Please try again.');
+    if (phase === 'processing' && orderId) {
+      console.log('Starting order status polling for orderId:', orderId);
+      
+      const poll = async () => {
+        const isComplete = await pollOrderStatus();
+        if (isComplete && pollInterval) {
+          console.log('Polling complete, clearing interval');
           clearInterval(pollInterval);
         }
-      } catch (error) {
-        console.error('Error polling order status:', error);
-      }
-    };
-
-    if (isSuccess && orderData?.orderId) {
+      };
+      
       // Start polling immediately
-      pollOrderStatus();
+      poll();
+      
       // Then poll every second
-      pollInterval = setInterval(pollOrderStatus, 1000);
+      pollInterval = setInterval(poll, 1000);
     }
 
     return () => {
       if (pollInterval) {
+        console.log('Cleaning up polling interval');
         clearInterval(pollInterval);
       }
     };
-  }, [isSuccess, orderData?.orderId, orderStatus]);
+  }, [phase, orderId, pollOrderStatus]);
 
   // Watch for transaction state changes
   useEffect(() => {
     if (isPending) {
-      setPhase('signing');
+      console.log('Transaction pending...');
+      setPhase('processing');
       setIsConfirming(true);
-    } else if (isError) {
-      console.log('Transaction error:', txError);
+      setLoading(true);
+    } else if (isSuccess && txData) {
+      console.log('Transaction successful, starting order status polling');
+      // Ensure we have the orderId from our order data
+      if (orderData?.orderId) {
+        console.log('Using orderId from order data:', orderData.orderId);
+        setOrderId(orderData.orderId);
+      } else {
+        console.error('No orderId found in order data');
+      }
+      setPhase('processing');
+      setIsConfirming(false);
+      setLoading(false);
+      setTransactionHash(txData.hash);
+      setTransactionStatus('success');
+      setTransactionResult('Transaction sent successfully');
+      setTransactionReceipt('Transaction has been sent to the network');
+      setTransactionBlockNumber(txData.blockNumber?.toString() || null);
+      setTransactionConfirmations(txData.confirmations?.toString() || null);
+      setTransactionGasUsed(txData.gasUsed?.toString() || null);
+      setTransactionEffectiveGasPrice(txData.effectiveGasPrice?.toString() || null);
+      setTransactionBlockHash(txData.blockHash || null);
+      setTransactionBlockTimestamp(txData.blockTimestamp?.toString() || null);
+      setTransactionFrom(txData.from || null);
+    } else if (isError && txError) {
+      console.error('Transaction error:', txError);
       
       // Check if it's a user rejection
       const errorMessage = txError?.message?.toLowerCase() || '';
@@ -567,17 +676,14 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
         setIsConfirming(false);
         setLoading(false);
       }
-    } else if (isSuccess) {
-      console.log('Transaction successful:', txData);
-      setPhase('processing');
-      setIsConfirming(false);
-      setLoading(false);
     }
-  }, [isPending, isError, txError, isSuccess, txData]);
+  }, [isPending, isSuccess, isError, txData, txError, orderData]);
 
   const renderDetailsContent = () => {
     return (
+      
       <div className="space-y-6 bg-white">
+        
         {!walletAddress && (
           <div className="bg-gray-50 p-4 rounded-lg">
             <p className="text-gray-600">Please connect your wallet to continue</p>
@@ -828,6 +934,15 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
 
     return (
       <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-medium text-gray-900">Review Order</h3>
+          <button
+            onClick={handleBack}
+            className="text-sm text-gray-500 hover:text-gray-700"
+          >
+            Back
+          </button>
+        </div>
         {/* Product Details */}
         <div className="space-y-4">
           <h3 className="text-lg font-medium text-gray-900">Product Details</h3>
@@ -1026,18 +1141,29 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
   }, [orderData]);
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[425px] bg-white max-h-[90vh] overflow-y-auto">
+    <Dialog 
+      open={isOpen} 
+      onOpenChange={(open) => {
+        // Only allow closing if:
+        // 1. User clicked cancel button (handled by handleClose)
+        // 2. Transaction failed (handled by handleClose)
+        // 3. Transaction succeeded and user acknowledged (handled by handleClose)
+        if (!open && isSuccess && txData && !orderStatus) {
+          // Don't allow closing while waiting for order status
+          return;
+        }
+        if (!open) {
+          handleClose();
+        }
+      }}
+      modal={true}
+    >
+      <DialogContent className="sm:max-w-[425px] bg-white text-black max-h-[90vh] overflow-y-auto [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-gray-100 [&::-webkit-scrollbar-thumb]:bg-gray-400 [&::-webkit-scrollbar-thumb]:rounded-full" onPointerDownOutside={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle>
             {phase === 'signing' || phase === 'processing' ? 'Confirming Transaction' : 'Checkout'}
           </DialogTitle>
         </DialogHeader>
-        {error && (
-          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-600">
-            {error}
-          </div>
-        )}
         {phase === 'details' && renderDetailsContent()}
         {phase === 'review' && renderReviewContent()}
         {phase === 'signing' && (
