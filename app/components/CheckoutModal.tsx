@@ -1,12 +1,15 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { X, Loader2 } from 'lucide-react';
+import { ConnectWallet } from "@coinbase/onchainkit/wallet";
 import { useAccount, useWalletClient, useSignMessage, useSendTransaction, useChainId } from 'wagmi';
 import { parseTransaction } from 'viem';
+import { useBalanceContext } from '../contexts/BalanceContext';
 import { base } from 'wagmi/chains';
-import { ConnectWallet, Wallet, WalletDropdown, WalletDropdownDisconnect } from "@coinbase/onchainkit/wallet";
 import { Name, Identity, Address, Avatar, EthBalance } from "@coinbase/onchainkit/identity";
+import { Wallet, WalletDropdown, WalletDropdownDisconnect } from "@coinbase/onchainkit/wallet";
 
 interface CheckoutModalProps {
   isOpen: boolean;
@@ -18,9 +21,53 @@ interface CheckoutModalProps {
     thumbnail: string;
     asin: string;
   };
+  initialOrderData?: {
+    orderId: string;
+    quote: Quote;
+    selectedCurrency: Currency;
+    email: string;
+    shippingAddress: {
+      name: string;
+      address1: string;
+      address2: string;
+      city: string;
+      province: string;
+      postalCode: string;
+      country: string;
+    };
+  };
+  onOrderCreated?: (data: {
+    orderData: any;
+    quote: any;
+    selectedCurrency: Currency;
+    email: string;
+    shippingAddress: {
+      name: string;
+      address1: string;
+      address2: string;
+      city: string;
+      province: string;
+      postalCode: string;
+      country: string;
+    };
+  }) => void;
 }
 
 type CheckoutPhase = 'details' | 'review' | 'signing' | 'processing' | 'success' | 'error';
+
+type Currency = 'usdc';
+
+interface OrderData {
+  orderId: string;
+  payment: {
+    status: string;
+    preparation?: {
+      serializedTransaction: string;
+      payerAddress: string;
+      chain: string;
+    };
+  };
+}
 
 interface Quote {
   status: string;
@@ -32,20 +79,15 @@ interface Quote {
   };
 }
 
-interface OrderData {
-  orderId: string;
-  payment: {
-    preparation: {
-      serializedTransaction: string;
-      payerAddress: string;
-      chain: string;
-    };
+interface Balance {
+  token: Currency;
+  decimals: number;
+  balances: {
+    [key: string]: string;
   };
 }
 
-type Currency = 'credit' | 'usdc';
-
-export default function CheckoutModal({ isOpen, onClose, product }: CheckoutModalProps) {
+export default function CheckoutModal({ isOpen, onClose, product, initialOrderData, onOrderCreated }: CheckoutModalProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { address: walletAddress } = useAccount();
@@ -53,8 +95,9 @@ export default function CheckoutModal({ isOpen, onClose, product }: CheckoutModa
   const { data: walletClient } = useWalletClient();
   const { signMessageAsync } = useSignMessage();
   const { sendTransaction } = useSendTransaction();
-  const [email, setEmail] = useState('');
-  const [shippingAddress, setShippingAddress] = useState({
+  const { balances } = useBalanceContext();
+  const [email, setEmail] = useState(initialOrderData?.email || '');
+  const [shippingAddress, setShippingAddress] = useState(initialOrderData?.shippingAddress || {
     name: '',
     address1: '',
     address2: '',
@@ -63,10 +106,10 @@ export default function CheckoutModal({ isOpen, onClose, product }: CheckoutModa
     postalCode: '',
     country: 'US'
   });
-  const [phase, setPhase] = useState<CheckoutPhase>('details');
-  const [orderId, setOrderId] = useState<string | null>(null);
+  const [phase, setPhase] = useState<CheckoutPhase>(initialOrderData ? 'review' : 'details');
+  const [orderId, setOrderId] = useState<string | null>(initialOrderData?.orderId || null);
   const [orderStatus, setOrderStatus] = useState<string | null>(null);
-  const [quote, setQuote] = useState<Quote | null>(null);
+  const [quote, setQuote] = useState<Quote | null>(initialOrderData?.quote || null);
   const [orderData, setOrderData] = useState<OrderData | null>(null);
   const [selectedCurrency, setSelectedCurrency] = useState<Currency>('usdc');
 
@@ -77,6 +120,60 @@ export default function CheckoutModal({ isOpen, onClose, product }: CheckoutModa
 
   // Get current chain name
   const currentChainName = getChainName(chainId);
+
+  // Get current balance for selected currency and chain
+  const getCurrentBalance = () => {
+    const balance = balances?.find(b => b.token === selectedCurrency);
+    if (!balance) return '0';
+    return balance.balances[currentChainName] || '0';
+  };
+
+  // Get formatted balance for selected currency and chain
+  const getFormattedBalance = () => {
+    const balance = balances?.find(b => b.token === selectedCurrency);
+    if (!balance) return '0';
+    const value = balance.balances[currentChainName] || '0';
+    // Convert to number and divide by 10^decimals
+    const decimalValue = Number(value) / Math.pow(10, balance.decimals);
+    return decimalValue.toFixed(2);
+  };
+
+  // Convert decimal amount to proper decimal places for comparison
+  const convertToRawAmount = (amount: string | number) => {
+    const balance = balances.find(b => b.token === selectedCurrency);
+    if (!balance) return '0';
+    const amountStr = amount.toString();
+    const [whole, fraction = ''] = amountStr.split('.');
+    const paddedFraction = fraction.padEnd(balance.decimals, '0');
+    return `${whole}${paddedFraction}`;
+  };
+
+  // Compare raw balance values
+  const hasEnoughBalance = (requiredAmount: string | number) => {
+    const currentBalance = getCurrentBalance();
+    const rawRequiredAmount = convertToRawAmount(requiredAmount);
+    return BigInt(currentBalance) >= BigInt(rawRequiredAmount);
+  };
+
+  const hasInsufficientFunds = quote ? !hasEnoughBalance(quote.totalPrice.amount) : false;
+
+  const formatPrice = (price: string | number) => {
+    return `${price} ${selectedCurrency.toUpperCase()}`;
+  };
+
+  const formatQuoteExpiration = (dateString: string) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffInMinutes = Math.floor((date.getTime() - now.getTime()) / (1000 * 60));
+    return `${diffInMinutes} minutes`;
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleString();
+  };
+
+  // Helper function to uppercase string values
+  const uppercaseValue = (value: string) => value.toUpperCase();
 
   const resetModal = () => {
     setLoading(false);
@@ -96,33 +193,82 @@ export default function CheckoutModal({ isOpen, onClose, product }: CheckoutModa
     setOrderStatus(null);
     setQuote(null);
     setOrderData(null);
+    setSelectedCurrency('usdc');
   };
 
-  const handleClose = () => {
-    resetModal();
-    onClose();
-  };
-
-  if (!isOpen) return null;
-
-  const handleReview = async () => {
+  const handleDetailsSubmit = async () => {
     if (!walletAddress) {
       setError('Please connect your wallet first');
       return;
     }
 
+    if (!email || !shippingAddress.name || !shippingAddress.address1 || !shippingAddress.city || !shippingAddress.province || !shippingAddress.postalCode || !shippingAddress.country) {
+      setError('Please fill in all required fields');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/crossmint/order', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          product,
+          email,
+          shippingAddress,
+          selectedCurrency,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to create order');
+      }
+
+      const data = await response.json();
+      setOrderData(data.orderData);
+      setQuote(data.quote);
+      setPhase('review');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create order');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleReview = async () => {
+    console.log('handleReview called with state:', {
+      walletAddress,
+      chainId,
+      email,
+      shippingAddress,
+      selectedCurrency
+    });
+
+    if (!walletAddress) {
+      console.log('No wallet address found');
+      setError('Please connect your wallet first');
+      return;
+    }
+
     if (!chainId) {
+      console.log('No chain ID found');
       setError('Please select a network first');
       return;
     }
 
     if (!email) {
+      console.log('No email provided');
       setError('Please enter your email');
       return;
     }
 
     if (!shippingAddress.name || !shippingAddress.address1 || !shippingAddress.city || 
         !shippingAddress.province || !shippingAddress.postalCode) {
+      console.log('Incomplete shipping address:', shippingAddress);
       setError('Please fill in all required shipping address fields');
       return;
     }
@@ -141,7 +287,6 @@ export default function CheckoutModal({ isOpen, onClose, product }: CheckoutModa
         currency: selectedCurrency
       });
 
-      // Get quote first
       const response = await fetch('/api/checkout/crossmint', {
         method: 'POST',
         headers: {
@@ -168,7 +313,12 @@ export default function CheckoutModal({ isOpen, onClose, product }: CheckoutModa
         throw new Error(data.error || 'Failed to get quote');
       }
 
-      // Store all the necessary data
+      console.log('Setting order data:', {
+        orderId: data.order.orderId,
+        quote: data.order.quote,
+        payment: data.order.payment
+      });
+
       setQuote(data.order.quote);
       setOrderId(data.order.orderId);
       setOrderData({
@@ -185,8 +335,15 @@ export default function CheckoutModal({ isOpen, onClose, product }: CheckoutModa
   };
 
   const handleFinalize = async () => {
+    console.log('handleFinalize called with state:', {
+      walletClient: !!walletClient,
+      orderData,
+      selectedCurrency
+    });
+
     if (!walletClient || !orderData?.payment?.preparation?.serializedTransaction) {
-      setError('Invalid order data. Please try again.');
+      console.error('Invalid order data:', orderData);
+      setError('Unable to process your order. Please try again.');
       return;
     }
 
@@ -198,6 +355,8 @@ export default function CheckoutModal({ isOpen, onClose, product }: CheckoutModa
       const { serializedTransaction } = orderData.payment.preparation;
       const txHex = serializedTransaction.startsWith('0x') ? serializedTransaction : `0x${serializedTransaction}`;
       const tx = parseTransaction(txHex as `0x${string}`);
+      
+      console.log('Parsed transaction:', tx);
 
       const result = await sendTransaction({
         to: tx.to as `0x${string}`,
@@ -217,349 +376,316 @@ export default function CheckoutModal({ isOpen, onClose, product }: CheckoutModa
     }
   };
 
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleString();
+  const handleClose = () => {
+    console.log('Modal closing, resetting state');
+    resetModal();
+    onClose();
   };
 
-  // Helper function to uppercase string values
-  const uppercaseValue = (value: string) => value.toUpperCase();
+  const renderDetailsContent = () => {
+    return (
+      <div className="space-y-6">
+        {!walletAddress && (
+          <div className="bg-yellow-50 p-4 rounded-lg">
+            <p className="text-yellow-800">Please connect your wallet to continue</p>
+            <div className="mt-4">
+              <ConnectWallet />
+            </div>
+          </div>
+        )}
+
+        {/* Product Information */}
+        <div className="flex items-start space-x-4">
+          <div className="flex-shrink-0 w-24 h-24">
+            <img
+              src={product.thumbnail}
+              alt={product.title}
+              className="w-full h-full object-cover rounded-lg"
+            />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-lg font-medium text-gray-900">{product.title}</h3>
+            {product.variant && (
+              <p className="text-sm text-gray-500">Variant: {product.variant}</p>
+            )}
+            <p className="text-lg font-medium text-gray-900 mt-2">
+              {product.price} {selectedCurrency.toUpperCase()}
+            </p>
+          </div>
+        </div>
+
+        {/* Email */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700">Email</label>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
+            required
+          />
+        </div>
+
+        {/* Shipping Address */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700">Shipping Address</label>
+          <div className="mt-1 space-y-2">
+            <input
+              type="text"
+              placeholder="Full Name"
+              value={shippingAddress.name}
+              onChange={(e) => setShippingAddress(prev => ({ ...prev, name: e.target.value }))}
+              className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
+              required
+            />
+            <input
+              type="text"
+              placeholder="Address Line 1"
+              value={shippingAddress.address1}
+              onChange={(e) => setShippingAddress(prev => ({ ...prev, address1: e.target.value }))}
+              className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
+              required
+            />
+            <input
+              type="text"
+              placeholder="Address Line 2 (Optional)"
+              value={shippingAddress.address2}
+              onChange={(e) => setShippingAddress(prev => ({ ...prev, address2: e.target.value }))}
+              className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="text"
+                placeholder="City"
+                value={shippingAddress.city}
+                onChange={(e) => setShippingAddress(prev => ({ ...prev, city: e.target.value }))}
+                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
+                required
+              />
+              <input
+                type="text"
+                placeholder="Province/State"
+                value={shippingAddress.province}
+                onChange={(e) => setShippingAddress(prev => ({ ...prev, province: e.target.value }))}
+                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
+                required
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="text"
+                placeholder="Postal Code"
+                value={shippingAddress.postalCode}
+                onChange={(e) => setShippingAddress(prev => ({ ...prev, postalCode: e.target.value }))}
+                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
+                required
+              />
+              <input
+                type="text"
+                placeholder="Country"
+                value={shippingAddress.country}
+                onChange={(e) => setShippingAddress(prev => ({ ...prev, country: e.target.value }))}
+                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
+                required
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex justify-end space-x-4">
+          <button
+            onClick={resetModal}
+            className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleDetailsSubmit}
+            disabled={loading || !walletAddress}
+            className="px-4 py-2 text-sm font-medium text-white bg-black rounded-lg hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Continue to Review'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderReviewContent = () => {
+    if (!orderData) return null;
+
+    return (
+      <div className="space-y-6">
+        <div className="space-y-4">
+          <h3 className="text-lg font-medium">Order Summary</h3>
+          <div className="space-y-2">
+            <div className="flex justify-between text-sm">
+              <span>Product:</span>
+              <span>{product.title}</span>
+            </div>
+            {product.variant && (
+              <div className="flex justify-between text-sm">
+                <span>Variant:</span>
+                <span>{product.variant}</span>
+              </div>
+            )}
+            <div className="flex justify-between text-sm">
+              <span>Price:</span>
+              <span>{formatPrice(product.price)}</span>
+            </div>
+          </div>
+        </div>
+
+        {renderQuoteSection()}
+
+        <div className="space-y-4">
+          <h3 className="text-lg font-medium">Shipping Information</h3>
+          <div className="space-y-2 text-sm">
+            <p>{shippingAddress.name}</p>
+            <p>{shippingAddress.address1}</p>
+            {shippingAddress.address2 && <p>{shippingAddress.address2}</p>}
+            <p>{shippingAddress.city}, {shippingAddress.province} {shippingAddress.postalCode}</p>
+            <p>{shippingAddress.country}</p>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <h3 className="text-lg font-medium">Payment Method</h3>
+          <div className="flex items-center space-x-2">
+            <span className="text-sm">USDC</span>
+          </div>
+        </div>
+
+        {hasInsufficientFunds && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-600 flex items-center space-x-2">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <span>Insufficient USDC balance. Please top up your wallet or try a different payment method.</span>
+          </div>
+        )}
+
+        <div className="flex justify-end space-x-4">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleFinalize}
+            disabled={loading || hasInsufficientFunds}
+            className={`px-4 py-2 text-sm font-medium text-white rounded-md ${
+              loading || hasInsufficientFunds
+                ? 'bg-gray-400 cursor-not-allowed'
+                : 'bg-blue-600 hover:bg-blue-700'
+            }`}
+          >
+            {loading ? 'Processing...' : 'Finalize Order'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderQuoteSection = () => {
+    if (!quote) return null;
+
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-between items-center text-sm">
+          <span>Quote expires in:</span>
+          <span className="text-xs whitespace-nowrap">{formatQuoteExpiration(quote.expiresAt)}</span>
+        </div>
+        <div className="flex justify-between items-center text-sm">
+          <span>Total:</span>
+          <span className="font-medium">{formatPrice(quote.totalPrice.amount)}</span>
+        </div>
+      </div>
+    );
+  };
+
+  const renderSuccessContent = () => {
+    return (
+      <div className="text-center py-8">
+        <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-green-100">
+          <svg className="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+        </div>
+        <p className="mt-4 text-lg font-medium text-gray-900">Order Successful!</p>
+        <p className="mt-2 text-sm text-gray-500">Thank you for your purchase</p>
+        <button
+          onClick={handleClose}
+          className="mt-6 px-4 py-2 text-sm font-medium text-white bg-black rounded-lg hover:bg-gray-800"
+        >
+          Close
+        </button>
+      </div>
+    );
+  };
 
   const renderContent = () => {
     switch (phase) {
+      case 'details':
+        return renderDetailsContent();
       case 'review':
-        return (
-          <div className="space-y-6">
-            <div className="flex items-start space-x-4">
-              <img
-                src={product.thumbnail}
-                alt={product.title}
-                className="w-24 h-24 object-contain rounded"
-              />
-              <div>
-                <h3 className="font-medium text-gray-900">{product.title}</h3>
-                {product.variant && (
-                  <p className="text-sm text-gray-500">{product.variant}</p>
-                )}
-                <p className="text-lg font-medium text-gray-900 mt-1">
-                  ${product.price ? (typeof product.price === 'string' ? product.price : product.price.toFixed(2)) : '0.00'} (+ fees)
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-4 bg-gray-50 p-4 rounded-lg">
-              <h4 className="font-medium text-gray-900">Quote Details</h4>
-              <div className="text-sm text-gray-600 space-y-2">
-                <div className="flex items-center justify-between">
-                  <p className="text-lg font-medium">
-                    Total Price: {quote?.totalPrice.amount} {selectedCurrency.toUpperCase()}
-                  </p>
-                </div>
-                <p>Quote Valid Until: {formatDate(quote?.expiresAt || '')}</p>
-                <p className="text-xs text-gray-500">
-                  This quote is valid for 10 minutes. After that, you'll need to request a new quote.
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <h4 className="font-medium text-gray-900">Order Summary</h4>
-              <div className="text-sm text-gray-600">
-                <p>Email: {uppercaseValue(email)}</p>
-                <p>Shipping Address:</p>
-                <p>{uppercaseValue(shippingAddress.name)}</p>
-                <p>{uppercaseValue(shippingAddress.address1)}</p>
-                {shippingAddress.address2 && <p>{uppercaseValue(shippingAddress.address2)}</p>}
-                <p>{uppercaseValue(shippingAddress.city)}, {uppercaseValue(shippingAddress.province)} {uppercaseValue(shippingAddress.postalCode)}</p>
-                <p>{uppercaseValue(shippingAddress.country)}</p>
-              </div>
-            </div>
-
-            <div className="flex space-x-4">
-              <button
-                onClick={() => setPhase('details')}
-                className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-              >
-                Back
-              </button>
-              <button
-                onClick={handleFinalize}
-                disabled={loading}
-                className="flex-1 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-blue-300"
-              >
-                {loading ? 'Processing...' : 'Finalize Order'}
-              </button>
-            </div>
-          </div>
-        );
-
-      case 'signing':
-        return (
-          <div className="text-center space-y-4">
-            <Loader2 className="h-8 w-8 animate-spin mx-auto text-blue-600" />
-            <h3 className="text-lg font-medium text-gray-900">Sign Transaction</h3>
-            <p className="text-sm text-gray-600">Please sign the transaction in your wallet to complete the purchase.</p>
-          </div>
-        );
-
-      case 'processing':
-        return (
-          <div className="text-center space-y-4">
-            <Loader2 className="h-8 w-8 animate-spin mx-auto text-blue-600" />
-            <h3 className="text-lg font-medium text-gray-900">Processing Order</h3>
-            <p className="text-sm text-gray-600">Your order is being processed. Please wait...</p>
-          </div>
-        );
-
+        return renderReviewContent();
       case 'success':
-        return (
-          <div className="text-center space-y-4">
-            <h3 className="text-lg font-medium text-gray-900">Order Successful!</h3>
-            <p className="text-sm text-gray-600">Thank you for your purchase. You will receive a confirmation email shortly.</p>
-            <button
-              onClick={handleClose}
-              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-            >
-              Close
-            </button>
-          </div>
-        );
-
-      case 'error':
-        return (
-          <div className="text-center space-y-4">
-            <h3 className="text-lg font-medium text-red-600">Order Failed</h3>
-            <p className="text-sm text-gray-600">{error}</p>
-            <div className="flex space-x-4">
-              <button
-                onClick={() => setPhase('review')}
-                className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-              >
-                Back to Review
-              </button>
-              <button
-                onClick={() => setPhase('details')}
-                className="flex-1 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-              >
-                Start Over
-              </button>
-            </div>
-          </div>
-        );
-
+        return renderSuccessContent();
       default:
-        return (
-          <div className="space-y-6">
-            <div className="flex items-start space-x-4">
-              <img
-                src={product.thumbnail}
-                alt={product.title}
-                className="w-24 h-24 object-contain rounded"
-              />
-              <div>
-                <h3 className="font-medium text-gray-900">{product.title}</h3>
-                {product.variant && (
-                  <p className="text-sm text-gray-500">{product.variant}</p>
-                )}
-                <p className="text-lg font-medium text-gray-900 mt-1">
-                  ${product.price ? (typeof product.price === 'string' ? product.price : product.price.toFixed(2)) : '0.00'} (+ fees)
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <div className="bg-gray-50 p-4 rounded-lg">
-                <h4 className="font-medium text-gray-900 mb-2">Connect Wallet</h4>
-                <p className="text-sm text-gray-600 mb-4">Connect your wallet to proceed with checkout</p>
-                <Wallet className="z-10">
-                  <ConnectWallet>
-                    <Name className="text-inherit" />
-                  </ConnectWallet>
-                  <WalletDropdown>
-                    <Identity className="px-4 pt-3 pb-2" hasCopyAddressOnClick>
-                      <Avatar />
-                      <Name />
-                      <Address />
-                      <EthBalance />
-                    </Identity>
-                    <WalletDropdownDisconnect />
-                  </WalletDropdown>
-                </Wallet>
-                {walletAddress && (
-                  <div className="mt-4 pt-4 border-t border-gray-200">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-2">
-                        <div className="w-2 h-2 rounded-full bg-green-500"></div>
-                        <span className="text-sm font-medium text-gray-900">Connected</span>
-                      </div>
-                      <span className="text-sm text-gray-500">{walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {walletAddress && (
-                <>
-                  <div>
-                    <label htmlFor="currency" className="block text-sm font-medium text-gray-900 mb-2">
-                      Payment Currency
-                    </label>
-                    <div className="relative">
-                      <select
-                        id="currency"
-                        value={selectedCurrency}
-                        onChange={(e) => setSelectedCurrency(e.target.value as Currency)}
-                        className="w-full appearance-none rounded-lg border-2 border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-900 shadow-sm hover:border-gray-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-                      >
-                        <option value="usdc">USDC</option>
-                        <option value="credit">CREDITS</option>
-                      </select>
-                      <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
-                        <svg className="h-4 w-4 fill-current" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
-                          <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
-                        </svg>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label htmlFor="email" className="block text-sm font-medium text-gray-900">
-                      Email
-                    </label>
-                    <input
-                      type="email"
-                      id="email"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      className="mt-1 block w-full rounded-md border-2 border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm bg-white text-gray-900"
-                      placeholder="your@email.com"
-                    />
-                  </div>
-
-                  <div className="space-y-4">
-                    <h4 className="font-medium text-gray-900">Shipping Address</h4>
-                    
-                    <div>
-                      <label htmlFor="name" className="block text-sm font-medium text-gray-900">
-                        Full Name
-                      </label>
-                      <input
-                        type="text"
-                        id="name"
-                        value={shippingAddress.name}
-                        onChange={(e) => setShippingAddress(prev => ({ ...prev, name: e.target.value }))}
-                        className="mt-1 block w-full rounded-md border-2 border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm bg-white text-gray-900"
-                      />
-                    </div>
-
-                    <div>
-                      <label htmlFor="address1" className="block text-sm font-medium text-gray-900">
-                        Address Line 1
-                      </label>
-                      <input
-                        type="text"
-                        id="address1"
-                        value={shippingAddress.address1}
-                        onChange={(e) => setShippingAddress(prev => ({ ...prev, address1: e.target.value }))}
-                        className="mt-1 block w-full rounded-md border-2 border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm bg-white text-gray-900"
-                      />
-                    </div>
-
-                    <div>
-                      <label htmlFor="address2" className="block text-sm font-medium text-gray-900">
-                        Address Line 2 (Optional)
-                      </label>
-                      <input
-                        type="text"
-                        id="address2"
-                        value={shippingAddress.address2}
-                        onChange={(e) => setShippingAddress(prev => ({ ...prev, address2: e.target.value }))}
-                        className="mt-1 block w-full rounded-md border-2 border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm bg-white text-gray-900"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label htmlFor="city" className="block text-sm font-medium text-gray-900">
-                          City
-                        </label>
-                        <input
-                          type="text"
-                          id="city"
-                          value={shippingAddress.city}
-                          onChange={(e) => setShippingAddress(prev => ({ ...prev, city: e.target.value }))}
-                          className="mt-1 block w-full rounded-md border-2 border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm bg-white text-gray-900"
-                        />
-                      </div>
-
-                      <div>
-                        <label htmlFor="province" className="block text-sm font-medium text-gray-900">
-                          State/Province
-                        </label>
-                        <input
-                          type="text"
-                          id="province"
-                          value={shippingAddress.province}
-                          onChange={(e) => setShippingAddress(prev => ({ ...prev, province: e.target.value }))}
-                          className="mt-1 block w-full rounded-md border-2 border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm bg-white text-gray-900"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label htmlFor="postalCode" className="block text-sm font-medium text-gray-900">
-                        Postal Code
-                      </label>
-                      <input
-                        type="text"
-                        id="postalCode"
-                        value={shippingAddress.postalCode}
-                        onChange={(e) => setShippingAddress(prev => ({ ...prev, postalCode: e.target.value }))}
-                        className="mt-1 block w-full rounded-md border-2 border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm bg-white text-gray-900"
-                      />
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {error && (
-              <div className="text-sm text-red-600">
-                {error}
-              </div>
-            )}
-
-            <button
-              onClick={handleReview}
-              disabled={loading || !walletAddress}
-              className="w-full inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:bg-blue-300"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  Processing...
-                </>
-              ) : (
-                'Review Order'
-              )}
-            </button>
-          </div>
-        );
+        return null;
     }
   };
 
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-white rounded-lg max-w-md w-full p-6 relative my-8 max-h-[90vh] overflow-y-auto">
-        <button
-          onClick={handleClose}
-          className="absolute top-4 right-4 text-gray-500 hover:text-gray-700 z-10"
-        >
-          <X className="h-6 w-6" />
-        </button>
+  useEffect(() => {
+    console.log('CheckoutModal mounted with props:', {
+      isOpen,
+      product,
+      initialOrderData
+    });
+  }, []);
 
+  useEffect(() => {
+    console.log('initialOrderData changed:', initialOrderData);
+    if (initialOrderData) {
+      console.log('Setting initial order data:', {
+        email: initialOrderData.email,
+        shippingAddress: initialOrderData.shippingAddress,
+        orderId: initialOrderData.orderId,
+        quote: initialOrderData.quote,
+        selectedCurrency: initialOrderData.selectedCurrency
+      });
+      setEmail(initialOrderData.email);
+      setShippingAddress(initialOrderData.shippingAddress);
+      setOrderId(initialOrderData.orderId);
+      setQuote(initialOrderData.quote);
+      setSelectedCurrency(initialOrderData.selectedCurrency);
+      setPhase('review');
+    }
+  }, [initialOrderData]);
+
+  useEffect(() => {
+    console.log('Phase changed:', phase);
+  }, [phase]);
+
+  useEffect(() => {
+    console.log('Quote updated:', quote);
+  }, [quote]);
+
+  useEffect(() => {
+    console.log('Order data updated:', orderData);
+  }, [orderData]);
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="sm:max-w-[425px]">
+        <DialogHeader>
+          <DialogTitle>Checkout</DialogTitle>
+        </DialogHeader>
         {renderContent()}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 } 
