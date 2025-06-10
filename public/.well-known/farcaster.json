@@ -1,0 +1,23 @@
+{
+    "frame": {
+      "version": "1",
+      "name": "Worldstore - Powered by Crossmint",
+      "iconUrl": "https://checkout-api-farcaster-v0.vercel.app/logo.png",
+      "homeUrl": "https://yoink.party/framesV2/",
+      "imageUrl": "https://checkout-api-farcaster-v0.vercel.app/hero.png",
+      "buttonTitle": "Shop with Crypto",
+      "splashImageUrl": "https://checkout-api-farcaster-v0.vercel.app/splash.png",
+      "splashBackgroundColor": "#4f46e5",
+      "requiredChains": [
+        "eip155:8453"
+      ],
+      "requiredCapabilities": [
+        "actions.signIn",
+        "wallet.getEthereumProvider",
+        "actions.signMessage",
+        "wallet.sendTransaction",
+        "wallet.getBalance",
+        "wallet.switchChain"
+      ]
+    }
+  }
