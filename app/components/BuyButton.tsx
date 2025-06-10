@@ -1,6 +1,13 @@
 'use client';
 
 import { useState } from 'react';
+import { Dialog } from '@headlessui/react';
+import { X, Loader2 } from 'lucide-react';
+import { ConnectWallet } from "@coinbase/onchainkit/wallet";
+import { useAccount, useWalletClient, useSignMessage, useSendTransaction, useChainId } from 'wagmi';
+import { parseTransaction } from 'viem';
+import { useBalanceContext } from '../contexts/BalanceContext';
+import { base } from 'wagmi/chains';
 import CheckoutModal from './CheckoutModal';
 
 interface BuyButtonProps {
@@ -28,7 +35,7 @@ interface BuyButtonProps {
   }) => void;
 }
 
-export default function BuyButton({ product, onOrderCreated }: BuyButtonProps) {
+export function BuyButton({ product, onOrderCreated }: BuyButtonProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,12 +58,30 @@ export default function BuyButton({ product, onOrderCreated }: BuyButtonProps) {
         Buy Now
       </button>
 
-      <CheckoutModal
-        isOpen={isOpen}
+      <Dialog
+        open={isOpen}
         onClose={handleClose}
-        product={product}
-        onOrderCreated={onOrderCreated}
-      />
+        className="relative z-50"
+      >
+        <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
+
+        <div className="fixed inset-0 flex items-center justify-center p-4">
+          <Dialog.Panel className="mx-auto max-w-lg rounded-lg bg-white p-6 w-full relative my-8 max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={handleClose}
+              className="absolute top-4 right-4 text-gray-400 hover:text-gray-500"
+            >
+              <X className="h-6 w-6" />
+            </button>
+            <CheckoutModal
+              isOpen={isOpen}
+              onClose={handleClose}
+              product={product}
+              onOrderCreated={onOrderCreated}
+            />
+          </Dialog.Panel>
+        </div>
+      </Dialog>
     </>
   );
 } 

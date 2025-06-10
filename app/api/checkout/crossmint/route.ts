@@ -17,13 +17,40 @@ const uppercaseObjectValues = (obj: Record<string, any>): Record<string, any> =>
 };
 
 export async function POST(request: Request) {
+  console.log('Crossmint API - Request received');
+  
   try {
     const body = await request.json();
     console.log('Crossmint API - Request body:', JSON.stringify(body, null, 2));
 
     const { title, price, thumbnail, asin, email, shippingAddress, walletAddress, chain, currency } = body;
 
+    // Log all required fields
+    console.log('Crossmint API - Required fields:', {
+      title: !!title,
+      price: !!price,
+      thumbnail: !!thumbnail,
+      asin: !!asin,
+      email: !!email,
+      shippingAddress: !!shippingAddress,
+      walletAddress: !!walletAddress,
+      chain: !!chain,
+      currency: !!currency
+    });
+
     if (!title || !price || !asin || !email || !shippingAddress || !walletAddress || !chain || !currency) {
+      console.error('Crossmint API - Missing required parameters:', {
+        missing: {
+          title: !title,
+          price: !price,
+          asin: !asin,
+          email: !email,
+          shippingAddress: !shippingAddress,
+          walletAddress: !walletAddress,
+          chain: !chain,
+          currency: !currency
+        }
+      });
       return NextResponse.json(
         { error: 'Missing required parameters' },
         { status: 400 }
@@ -48,8 +75,11 @@ export async function POST(request: Request) {
       rejectUnauthorized: process.env.NODE_ENV === 'production'
     });
 
+    const crossmintUrl = `${CROSSMINT_CONFIG.baseUrl}/api/2022-06-09/orders`;
+    console.log('Crossmint API - Making request to:', crossmintUrl);
+
     // Send directly to Crossmint headless checkout with product locator
-    const checkoutResponse = await fetch(`${CROSSMINT_CONFIG.baseUrl}/api/2022-06-09/orders`, {
+    const checkoutResponse = await fetch(crossmintUrl, {
       method: 'POST',
       headers: {
         'X-API-KEY': API_KEY,
@@ -87,10 +117,17 @@ export async function POST(request: Request) {
     });
 
     console.log('Crossmint Checkout Order API - Response status:', checkoutResponse.status);
+    console.log('Crossmint Checkout Order API - Response headers:', Object.fromEntries(checkoutResponse.headers.entries()));
+    
     const checkoutData = await checkoutResponse.json();
     console.log('Crossmint Checkout Order API - Response:', JSON.stringify(checkoutData, null, 2));
 
     if (!checkoutResponse.ok) {
+      console.error('Crossmint API - Error response:', {
+        status: checkoutResponse.status,
+        statusText: checkoutResponse.statusText,
+        data: checkoutData
+      });
       return NextResponse.json(
         { error: checkoutData.message || 'Failed to create checkout session' },
         { status: checkoutResponse.status }

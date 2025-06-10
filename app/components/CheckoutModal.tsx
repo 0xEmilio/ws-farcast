@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { X, Loader2 } from 'lucide-react';
 import { ConnectWallet } from "@coinbase/onchainkit/wallet";
-import { useAccount, useWalletClient, useSignMessage, useSendTransaction, useChainId } from 'wagmi';
+import { useAccount, useWalletClient, useSignMessage, useSendTransaction, useChainId, useDisconnect } from 'wagmi';
 import { parseTransaction } from 'viem';
 import { useBalanceContext } from '../contexts/BalanceContext';
 import { base } from 'wagmi/chains';
@@ -91,6 +91,7 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { address: walletAddress } = useAccount();
+  const { disconnect } = useDisconnect();
   const chainId = useChainId();
   const { data: walletClient } = useWalletClient();
   const { signMessageAsync } = useSignMessage();
@@ -211,28 +212,62 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
     setError(null);
 
     try {
-      const response = await fetch('/api/crossmint/order', {
+      // Convert all string values to uppercase
+      const uppercasedEmail = email.toUpperCase();
+      const uppercasedShippingAddress = {
+        name: shippingAddress.name.toUpperCase(),
+        address1: shippingAddress.address1.toUpperCase(),
+        address2: shippingAddress.address2?.toUpperCase() || '',
+        city: shippingAddress.city.toUpperCase(),
+        province: shippingAddress.province.toUpperCase(),
+        postalCode: shippingAddress.postalCode.toUpperCase(),
+        country: shippingAddress.country.toUpperCase()
+      };
+
+      console.log('handleDetailsSubmit - Sending request to:', '/api/checkout/crossmint');
+      console.log('Request data:', {
+        product,
+        email: uppercasedEmail,
+        shippingAddress: uppercasedShippingAddress,
+        selectedCurrency,
+      });
+
+      const response = await fetch('/api/checkout/crossmint', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          product,
-          email,
-          shippingAddress,
-          selectedCurrency,
+          ...product,
+          email: uppercasedEmail,
+          shippingAddress: uppercasedShippingAddress,
+          walletAddress,
+          chain: getChainName(chainId),
+          currency: selectedCurrency
         }),
       });
 
+      console.log('Response status:', response.status);
+      console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+
       if (!response.ok) {
-        throw new Error('Failed to create order');
+        const errorData = await response.json();
+        console.error('API Error:', {
+          status: response.status,
+          statusText: response.statusText,
+          data: errorData
+        });
+        throw new Error(errorData.error || 'Failed to create order');
       }
 
       const data = await response.json();
-      setOrderData(data.orderData);
-      setQuote(data.quote);
+      console.log('API Response:', data);
+
+      setOrderData(data.order);
+      setQuote(data.order.quote);
       setPhase('review');
     } catch (err) {
+      console.error('Order creation error:', err);
       setError(err instanceof Error ? err.message : 'Failed to create order');
     } finally {
       setLoading(false);
@@ -278,35 +313,38 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
 
     try {
       const chainName = getChainName(chainId);
-      console.log('Sending request to Crossmint with data:', {
-        product,
+      const requestData = {
+        ...product,
         email,
         shippingAddress,
         walletAddress,
         chain: chainName,
         currency: selectedCurrency
-      });
+      };
+      
+      console.log('Sending request to Crossmint with data:', requestData);
+      console.log('API Endpoint:', '/api/checkout/crossmint');
 
       const response = await fetch('/api/checkout/crossmint', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          ...product,
-          email,
-          shippingAddress,
-          walletAddress,
-          chain: chainName,
-          currency: selectedCurrency
-        }),
+        body: JSON.stringify(requestData),
       });
+
+      console.log('Response status:', response.status);
+      console.log('Response headers:', Object.fromEntries(response.headers.entries()));
 
       const data = await response.json();
       console.log('Crossmint API Response:', data);
 
       if (!response.ok) {
-        console.error('Crossmint API Error:', data);
+        console.error('Crossmint API Error:', {
+          status: response.status,
+          statusText: response.statusText,
+          data: data
+        });
         if (data.error?.includes('SELLER_CONFIG_INVALID')) {
           throw new Error('Please double check your shipping address and try again');
         }
@@ -376,6 +414,15 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
     }
   };
 
+  const handleBack = () => {
+    // Reset order-related state
+    setOrderData(null);
+    setQuote(null);
+    setOrderId(null);
+    // Return to details phase
+    setPhase('details');
+  };
+
   const handleClose = () => {
     console.log('Modal closing, resetting state');
     resetModal();
@@ -384,23 +431,51 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
 
   const renderDetailsContent = () => {
     return (
-      <div className="space-y-6">
+      <div className="space-y-6 bg-white">
         {!walletAddress && (
-          <div className="bg-yellow-50 p-4 rounded-lg">
-            <p className="text-yellow-800">Please connect your wallet to continue</p>
+          <div className="bg-gray-50 p-4 rounded-lg">
+            <p className="text-gray-600">Please connect your wallet to continue</p>
             <div className="mt-4">
               <ConnectWallet />
             </div>
           </div>
         )}
 
+        {walletAddress && (
+          <div className="bg-gray-50 p-4 rounded-lg">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                <span className="text-sm font-medium text-gray-900">Connected</span>
+              </div>
+              <div className="flex items-center space-x-3">
+                <span className="text-sm text-gray-500">{walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}</span>
+                <button
+                  onClick={() => {
+                    // Reset the form state
+                    setPhase('details');
+                    setOrderId(null);
+                    setQuote(null);
+                    setOrderData(null);
+                    // Properly disconnect using wagmi
+                    disconnect();
+                  }}
+                  className="px-3 py-1 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black"
+                >
+                  Disconnect
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Product Information */}
         <div className="flex items-start space-x-4">
-          <div className="flex-shrink-0 w-24 h-24">
+          <div className="flex-shrink-0 w-24 h-24 bg-gray-50 rounded-lg flex items-center justify-center">
             <img
               src={product.thumbnail}
               alt={product.title}
-              className="w-full h-full object-cover rounded-lg"
+              className="w-full h-full object-contain p-2"
             />
           </div>
           <div className="flex-1">
@@ -414,6 +489,27 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
           </div>
         </div>
 
+        {walletAddress && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Payment Currency</label>
+            <div className="relative mt-1">
+              <select
+                value={selectedCurrency}
+                onChange={(e) => setSelectedCurrency(e.target.value as Currency)}
+                className="w-full appearance-none rounded-lg border-2 border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-900 shadow-sm hover:border-gray-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+              >
+                <option value="usdc">USDC</option>
+                <option value="credit">CREDITS</option>
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                <svg className="h-4 w-4 fill-current" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+                  <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
+                </svg>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Email */}
         <div>
           <label className="block text-sm font-medium text-gray-700">Email</label>
@@ -421,71 +517,79 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
+            className="mt-1 block w-full rounded-md border-2 border-gray-300 bg-white text-black shadow-sm focus:border-black focus:ring-2 focus:ring-black focus:ring-opacity-50 pl-4"
             required
           />
         </div>
 
         {/* Shipping Address */}
-        <div>
+        <div className="space-y-4">
           <label className="block text-sm font-medium text-gray-700">Shipping Address</label>
-          <div className="mt-1 space-y-2">
-            <input
-              type="text"
-              placeholder="Full Name"
-              value={shippingAddress.name}
-              onChange={(e) => setShippingAddress(prev => ({ ...prev, name: e.target.value }))}
-              className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
-              required
-            />
-            <input
-              type="text"
-              placeholder="Address Line 1"
-              value={shippingAddress.address1}
-              onChange={(e) => setShippingAddress(prev => ({ ...prev, address1: e.target.value }))}
-              className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
-              required
-            />
-            <input
-              type="text"
-              placeholder="Address Line 2 (Optional)"
-              value={shippingAddress.address2}
-              onChange={(e) => setShippingAddress(prev => ({ ...prev, address2: e.target.value }))}
-              className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
-            />
-            <div className="grid grid-cols-2 gap-2">
+          <div className="space-y-2">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
               <input
                 type="text"
-                placeholder="City"
-                value={shippingAddress.city}
-                onChange={(e) => setShippingAddress(prev => ({ ...prev, city: e.target.value }))}
-                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
-                required
-              />
-              <input
-                type="text"
-                placeholder="Province/State"
-                value={shippingAddress.province}
-                onChange={(e) => setShippingAddress(prev => ({ ...prev, province: e.target.value }))}
-                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
+                placeholder="Enter your full name"
+                value={shippingAddress.name}
+                onChange={(e) => setShippingAddress(prev => ({ ...prev, name: e.target.value }))}
+                className="block w-full rounded-md border-2 border-gray-300 bg-white text-black shadow-sm focus:border-black focus:ring-2 focus:ring-black focus:ring-opacity-50 pl-4"
                 required
               />
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Address Line 1</label>
               <input
                 type="text"
-                placeholder="Postal Code"
-                value={shippingAddress.postalCode}
-                onChange={(e) => setShippingAddress(prev => ({ ...prev, postalCode: e.target.value }))}
-                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
+                placeholder="Street address, P.O. box"
+                value={shippingAddress.address1}
+                onChange={(e) => setShippingAddress(prev => ({ ...prev, address1: e.target.value }))}
+                className="block w-full rounded-md border-2 border-gray-300 bg-white text-black shadow-sm focus:border-black focus:ring-2 focus:ring-black focus:ring-opacity-50 pl-4"
                 required
               />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Address Line 2 (Optional)</label>
               <input
                 type="text"
-                placeholder="Country"
-                value={shippingAddress.country}
-                onChange={(e) => setShippingAddress(prev => ({ ...prev, country: e.target.value }))}
-                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-black focus:ring-black"
+                placeholder="Apartment, suite, unit, building, floor, etc."
+                value={shippingAddress.address2}
+                onChange={(e) => setShippingAddress(prev => ({ ...prev, address2: e.target.value }))}
+                className="block w-full rounded-md border-2 border-gray-300 bg-white text-black shadow-sm focus:border-black focus:ring-2 focus:ring-black focus:ring-opacity-50 pl-4"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">City</label>
+                <input
+                  type="text"
+                  placeholder="Enter city"
+                  value={shippingAddress.city}
+                  onChange={(e) => setShippingAddress(prev => ({ ...prev, city: e.target.value }))}
+                  className="block w-full rounded-md border-2 border-gray-300 bg-white text-black shadow-sm focus:border-black focus:ring-2 focus:ring-black focus:ring-opacity-50 pl-4"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Province/State</label>
+                <input
+                  type="text"
+                  placeholder="Enter province/state"
+                  value={shippingAddress.province}
+                  onChange={(e) => setShippingAddress(prev => ({ ...prev, province: e.target.value }))}
+                  className="block w-full rounded-md border-2 border-gray-300 bg-white text-black shadow-sm focus:border-black focus:ring-2 focus:ring-black focus:ring-opacity-50 pl-4"
+                  required
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Postal Code</label>
+              <input
+                type="text"
+                placeholder="Enter postal code"
+                value={shippingAddress.postalCode}
+                onChange={(e) => setShippingAddress(prev => ({ ...prev, postalCode: e.target.value }))}
+                className="block w-full rounded-md border-2 border-gray-300 bg-white text-black shadow-sm focus:border-black focus:ring-2 focus:ring-black focus:ring-opacity-50 pl-4"
                 required
               />
             </div>
@@ -495,7 +599,7 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
         {/* Action Buttons */}
         <div className="flex justify-end space-x-4">
           <button
-            onClick={resetModal}
+            onClick={onClose}
             className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900"
           >
             Cancel
@@ -513,47 +617,75 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
   };
 
   const renderReviewContent = () => {
-    if (!orderData) return null;
+    if (!orderData || !walletAddress) return null;
+
+    // Check for insufficient funds error in the order response
+    const hasInsufficientFunds = orderData.payment?.status === 'crypto-payer-insufficient-funds';
 
     return (
       <div className="space-y-6">
+        {/* Product Details */}
         <div className="space-y-4">
-          <h3 className="text-lg font-medium">Order Summary</h3>
-          <div className="space-y-2">
-            <div className="flex justify-between text-sm">
-              <span>Product:</span>
-              <span>{product.title}</span>
+          <h3 className="text-lg font-medium text-gray-900">Product Details</h3>
+          <div className="flex items-start space-x-4">
+            <div className="flex-shrink-0 w-24 h-24 bg-gray-50 rounded-lg flex items-center justify-center">
+              <img
+                src={product.thumbnail}
+                alt={product.title}
+                className="w-full h-full object-contain p-2"
+              />
             </div>
-            {product.variant && (
+            <div className="flex-1">
+              <h4 className="text-base font-medium text-gray-900">{product.title}</h4>
+              {product.variant && (
+                <p className="text-sm text-gray-500">Variant: {product.variant}</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Quote Details */}
+        {quote && (
+          <div className="bg-gray-50 rounded-lg p-4 space-y-3">
+            <h3 className="text-lg font-medium text-gray-900">Quote Details</h3>
+            <div className="space-y-2">
               <div className="flex justify-between text-sm">
-                <span>Variant:</span>
-                <span>{product.variant}</span>
+                <span className="text-gray-500">Price:</span>
+                <span className="text-gray-900">{formatPrice(quote.totalPrice.amount)}</span>
               </div>
-            )}
-            <div className="flex justify-between text-sm">
-              <span>Price:</span>
-              <span>{formatPrice(product.price)}</span>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-500">Expires in:</span>
+                <span className="text-gray-900">{formatQuoteExpiration(quote.expiresAt)}</span>
+              </div>
+              <div className="border-t border-gray-200 pt-2 mt-2">
+                <div className="flex justify-between font-medium">
+                  <span className="text-gray-900">Total:</span>
+                  <span className="text-gray-900">{formatPrice(quote.totalPrice.amount)}</span>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
-        {renderQuoteSection()}
-
+        {/* Shipping Information */}
         <div className="space-y-4">
-          <h3 className="text-lg font-medium">Shipping Information</h3>
-          <div className="space-y-2 text-sm">
-            <p>{shippingAddress.name}</p>
-            <p>{shippingAddress.address1}</p>
-            {shippingAddress.address2 && <p>{shippingAddress.address2}</p>}
-            <p>{shippingAddress.city}, {shippingAddress.province} {shippingAddress.postalCode}</p>
-            <p>{shippingAddress.country}</p>
+          <h3 className="text-lg font-medium text-gray-900">Shipping Information</h3>
+          <div className="space-y-2 text-sm text-gray-500">
+            <p>{shippingAddress.name.toUpperCase()}</p>
+            <p>{shippingAddress.address1.toUpperCase()}</p>
+            {shippingAddress.address2 && <p>{shippingAddress.address2.toUpperCase()}</p>}
+            <p>{`${shippingAddress.city.toUpperCase()}, ${shippingAddress.province.toUpperCase()} ${shippingAddress.postalCode.toUpperCase()}`}</p>
+            <p>{shippingAddress.country.toUpperCase()}</p>
           </div>
         </div>
 
+        {/* Payment Method */}
         <div className="space-y-4">
-          <h3 className="text-lg font-medium">Payment Method</h3>
+          <h3 className="text-lg font-medium text-gray-900">Payment Method</h3>
           <div className="flex items-center space-x-2">
-            <span className="text-sm">USDC</span>
+            <span className="text-sm text-gray-500">{selectedCurrency.toUpperCase()}</span>
+            <span className="text-sm text-gray-500">•</span>
+            <span className="text-sm text-gray-500">{walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}</span>
           </div>
         </div>
 
@@ -562,45 +694,36 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
-            <span>Insufficient USDC balance. Please top up your wallet or try a different payment method.</span>
+            <span>Insufficient {selectedCurrency.toUpperCase()} balance. Please go back to change your wallet, currency, or top up your balance.</span>
           </div>
         )}
 
-        <div className="flex justify-end space-x-4">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900"
-          >
-            Cancel
-          </button>
+        <div className="flex justify-between space-x-4">
+          <div className="flex space-x-4">
+            <button
+              onClick={handleBack}
+              className="px-4 py-2 text-sm font-medium text-gray-900 bg-gray-100 rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
+            >
+              Back
+            </button>
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-medium text-red-700 bg-red-50 rounded-lg hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+            >
+              Cancel
+            </button>
+          </div>
           <button
             onClick={handleFinalize}
             disabled={loading || hasInsufficientFunds}
-            className={`px-4 py-2 text-sm font-medium text-white rounded-md ${
+            className={`px-4 py-2 text-sm font-medium text-white rounded-lg ${
               loading || hasInsufficientFunds
                 ? 'bg-gray-400 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-700'
+                : 'bg-black hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-black'
             }`}
           >
             {loading ? 'Processing...' : 'Finalize Order'}
           </button>
-        </div>
-      </div>
-    );
-  };
-
-  const renderQuoteSection = () => {
-    if (!quote) return null;
-
-    return (
-      <div className="space-y-4">
-        <div className="flex justify-between items-center text-sm">
-          <span>Quote expires in:</span>
-          <span className="text-xs whitespace-nowrap">{formatQuoteExpiration(quote.expiresAt)}</span>
-        </div>
-        <div className="flex justify-between items-center text-sm">
-          <span>Total:</span>
-          <span className="font-medium">{formatPrice(quote.totalPrice.amount)}</span>
         </div>
       </div>
     );
@@ -680,7 +803,7 @@ export default function CheckoutModal({ isOpen, onClose, product, initialOrderDa
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-[425px] bg-white max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Checkout</DialogTitle>
         </DialogHeader>
